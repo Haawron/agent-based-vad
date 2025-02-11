@@ -1,3 +1,4 @@
+from typing import Literal
 import json
 import base64
 import io
@@ -87,19 +88,19 @@ def generate_video_caption(client: openai.Client, frames, prompt: str):
     return video_response
 
 
-def chat(client: openai.Client, prompt: str):
-    context_prompt = "If you were a law enforcement agency, how would you rate this scene on a scale from 0 to 1, with 0 representing a standard scene and 1 denoting a scene with suspicious activities?"
-
-    format_prompt = "Please provide the response in the form of a Python list and respond with only one number in the provided list below [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] without any textual explanation. It should begin with '[' and end with  ']'."
-
+def chat(
+    client: openai.Client,
+    system_prompt: str,
+    user_prompt: str
+):
     messages = [
         {
             'role': 'system',
-            'content': f'The following is a scene description. {context_prompt} {format_prompt}',
+            'content': system_prompt,
         },
         {
             "role": "user",
-            "content": prompt,
+            "content": user_prompt,
         }
     ]
     request = client.chat.completions.create(
@@ -114,9 +115,11 @@ def chat(client: openai.Client, prompt: str):
 
 class Main:
     def __init__(self):
-        self.p_ann_test = Path('/data/gunsbrother/repos/vlm/datasets/anomaly-detection-dataset/Temporal_Anomaly_Annotation_for_Testing_Videos.txt')
-        self.p_videos_root = Path('/data/gunsbrother/repos/vlm/datasets/anomaly-detection-dataset/videos')
-        self.p_num_frames = Path('/data/gunsbrother/repos/vlm/datasets/anomaly-detection-dataset/num_frames_per_video.txt')
+        self.p_dataroot = Path('/datasets/UCF_Crimes')
+        self.p_annroot = Path('./data/annotations')
+        self.p_videos_root = self.p_dataroot / 'Videos'
+        self.p_ann_test = self.p_annroot / 'Temporal_Anomaly_Annotation_for_Testing_Videos.txt'
+        self.p_num_frames = self.p_annroot / 'num_frames_per_video.txt'
 
     def generate(
         self,
@@ -124,14 +127,15 @@ class Main:
         rank: int = 0, world_size: int = 1,
         vlm_model: str = 'lmms-lab/llava-onevision-qwen2-7b-ov',
         llm_model: str = 'meta-llama/Llama-3.2-3B-Instruct',
-        prompt_vlm = "Describe the video in a few sentences.",
+        prompt_vlm: str = "Describe the video in a few sentences.",
+        prompt_llm_system_language: Literal['en', 'kr'] = "en",
         duration_sec = 2,
     ):
-        p_vlm_outdir = Path('output/ucf-crime-captions') / f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/captions"
+        p_vlm_outdir = Path('output/ucf-crime-captions') / f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/raw"
         df_ann_test = pd.read_csv(
             self.p_ann_test, sep=r'\s+', header=None, names=['video', 'label', 's1', 'e1', 's2', 'e2'])
         p_vlm_outdir.mkdir(exist_ok=True, parents=True)
-        p_llm_outdir = p_vlm_outdir.parent / llm_model.replace('/', '-')
+        p_llm_outdir = p_vlm_outdir.parent / llm_model.replace('/', '-') / prompt_llm_system_language
         p_llm_outdir.mkdir(exist_ok=True, parents=True)
 
         df_ann_test = df_ann_test.iloc[rank::world_size]
@@ -139,11 +143,11 @@ class Main:
         ######################################################################
 
         server_process_vlm = subprocess.Popen(f"""
-            python3 -m sglang.launch_server 
+            python3 -m sglang.launch_server
                 --model-path {vlm_model}
-                --port={port} 
-                --tp-size=1 
-                --chat-template=chatml-llava 
+                --port={port}
+                --tp-size=1
+                --chat-template=chatml-llava
                 --host={'0.0.0.0' if host == 'localhost' else host}
             """.split(), text=True)
         wait_for_server(f"http://{host}:{port}", timeout=600)
@@ -205,6 +209,15 @@ class Main:
         wait_for_server(f"http://{host}:{port}")
         client_llm = create_openai_client(f"http://{host}:{port}/v1")
 
+        if prompt_llm_system_language == 'en':
+            context_prompt = "The following is a scene description. If you were a law enforcement agency, how would you rate this scene on a scale from 0 to 1, with 0 representing a standard scene and 1 denoting a scene with suspicious activities?"
+            format_prompt = "Please provide the response in the form of a Python list and respond with only one number in the provided list below [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] without any textual explanation. It should begin with '[' and end with  ']'."
+        elif prompt_llm_system_language == 'kr':
+            context_prompt = "다음은 비디오에 대한 설명이야. 만약 너가 경찰이라면 이 장면의 이상한 정도를 0부터 1까지의 점수 중에 어떻게 평가할 거야? 0은 일상적인 장면이고 1은 의심스러운 활동이 있는 장면이야."
+            format_prompt = "아래에 제공된 목록에서 하나의 숫자로만 응답해줘. [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] 이 숫자는 어떤 설명도 없이 제공되어야 해. '['로 시작해서 ']'로 끝나야 해."
+
+        system_prompt = f'{context_prompt} {format_prompt}'
+
         for p_json in tqdm(p_jsons, file=sys.stdout):
             video_record = json.load(p_json.open())
             p_json_new = (p_llm_outdir / video_record['label'] / video_record['video']).with_suffix('.json')
@@ -213,13 +226,15 @@ class Main:
                 continue
             p_json_new.parent.mkdir(exist_ok=True, parents=True)
             for response_record in video_record['response_records']:
+                user_prompt = f"Scene Description: {response_record['response']}"
                 llm_response: str = chat(
                     client_llm,
-                    f"Scene Description: {response_record['response']}"
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt
                 )
                 response_record['score_raw'] = llm_response
                 if 'DeepSeek-R1' in llm_model:
-                    llm_response = re.sub(r'<think>(?s:.)*</think>', '', llm_response).strip()
+                    llm_response = re.sub(r'^(?s:.)*</think>', '', llm_response).strip()
                 try:
                     score = eval(llm_response)[0]
                 except Exception as e:
@@ -235,15 +250,18 @@ class Main:
         self,
         rank: int = 0,
         llm_model: str = 'meta-llama/Llama-3.2-3B-Instruct',
-        prompt_vlm = "Describe the video in a few sentences.",
+        prompt_vlm: str = "Describe the video in a few sentences.",
+        prompt_llm_system_language: Literal['en', 'kr'] = "en",
         duration_sec = 2,
     ):
         if rank != 0:
             print(f'Skipping rank={rank} != 0 for evaluation')
             return
 
-        p_vlm_outdir = Path('output/ucf-crime-captions') / f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/captions"
-        p_llm_outdir = p_vlm_outdir.parent / llm_model.replace('/', '-')
+        p_vlm_outdir = Path('output/ucf-crime-captions') / f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/raw"
+        p_vlm_outdir.mkdir(exist_ok=True, parents=True)
+        p_llm_outdir = p_vlm_outdir.parent / llm_model.replace('/', '-') / prompt_llm_system_language
+        p_llm_outdir.mkdir(exist_ok=True, parents=True)
 
         df_ann_test = pd.read_csv(
             self.p_ann_test, sep=r'\s+', header=None, names=['video', 'label', 's1', 'e1', 's2', 'e2'])

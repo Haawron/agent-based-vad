@@ -1,0 +1,10 @@
+jupyterlab
+matplotlib
+numpy
+pandas
+scikit-learn
+seaborn
+decord
+openai
+fire
+nvitop

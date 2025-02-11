@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  torch:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        UID: ${UID}
+        GID: ${GID}
+    image: torch  # image name
+    container_name: torch
+    tty: true
+    stdin_open: true
+    gpus: 'all'
+    volumes:
+      - .:/code
+      - '${HOME}/.cache:/home/hglee/.cache'
+      - /projects3/datasets/UCF_Crimes/:/datasets/UCF_Crimes/
+
+# export UID=$(id -u)
+# export GID=$(id -g)
+# docker-compose up --build
+# docker-compose exec torch zsh
