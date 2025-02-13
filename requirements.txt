@@ -8,3 +8,5 @@ decord
 openai
 fire
 nvitop
+sglang-router
+ipywidgets

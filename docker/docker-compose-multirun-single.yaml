@@ -1,23 +1,60 @@
-name: llava-ov-7b-deepseek-r1-8b
-
-version: '3.8'
-
 services:
-  torch_worker:
-    image: torch
-    volumes:
-      - /projects3/home/hglee/prjs/agent-based-vad/:/code
-      - $HOME/.cache:/home/hglee/.cache
-      - /projects3/datasets/UCF_Crimes/:/datasets/UCF_Crimes/
-    command: bash scripts/vlm_llm_ucf_eval.sh ${REPLICA_INDEX} 8 'lmms-lab/llava-onevision-qwen2-7b-ov'
+  rankserver:
+    image: alpine:latest
+    ports:
+      - '5000:5000'
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache netcat-openbsd
+        COUNTER=0
+        while true; do
+          echo -e "HTTP/1.1 200 OK\r\n\r\n$$COUNTER" | nc -l -p 5000 -q 1
+          COUNTER=$(( COUNTER+1 ))
+        done
+
+  rankclient:
+    image: ubuntu:latest
+    depends_on:
+      - rankserver
+    command:
+      - sh
+      - -c
+      - |
+        sed -i "s@archive.ubuntu.com@mirror.kakao.com@g" /etc/apt/sources.list
+        apt-get update && apt-get install -y curl
+
+        while true; do
+          RANK=$(curl -s http://rankserver:5000)
+          if [ -z "$$RANK" ]; then
+            echo "Rank server is not ready yet"
+            sleep 1
+            continue
+          else
+            echo "Got rank: $$RANK"
+            break
+          fi
+        done
     deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-              device_ids: ['${REPLICA_INDEX}']
+      replicas: 8
+
+
+  # torch_worker:
+  #   image: torch
+  #   volumes:
+  #     - /projects3/home/hglee/prjs/agent-based-vad/:/code
+  #     - $HOME/.cache:/home/hglee/.cache
+  #     - /projects3/datasets/UCF_Crimes/:/datasets/UCF_Crimes/
+  #   command: bash scripts/vlm_llm_ucf_eval.sh ${REPLICA_INDEX} 8 'lmms-lab/llava-onevision-qwen2-7b-ov'
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #             device_ids: ['${REPLICA_INDEX}']
 
 # for i in {0..7}; do
 #     REPLICA_INDEX=$i docker-compose -f docker/docker-compose-multirun-single.yaml up -d
