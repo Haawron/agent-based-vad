@@ -42,7 +42,7 @@ def get_frames(
     for segment_idx in range(num_segments):
         segment_start_idx = segment_idx * num_frames_segment
         segment_end_idx = segment_start_idx + num_frames_segment - 1
-        uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, max_frames_num + 2, dtype=int)[1:-1]
+        uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, max_frames_num, dtype=int)
         frame_idx = uniform_sampled_frames.tolist()
         frames = vr.get_batch(frame_idx).asnumpy()
         yield {
@@ -54,7 +54,7 @@ def get_frames(
         }
 
 
-def generate_segment_caption(client: openai.Client, frames, user_prompt: str, model: str = "default"):
+def generate_video_caption(client: openai.Client, frames, prompt: str):
     base64_frames = []
     for frame in frames:
         pil_img = Image.fromarray(frame)
@@ -64,48 +64,34 @@ def generate_segment_caption(client: openai.Client, frames, user_prompt: str, mo
         base64_frames.append(base64_str)
 
     content = []
-    if len(base64_frames) > 1:
-        for base64_frame in base64_frames:
-            frame_format = {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{base64_frame}"},
-                "modalities": "video",
-            }
-            content.append(frame_format)
-        content.append({
-            'type': 'text',
-            'text': user_prompt,
-        })
-    elif len(base64_frames) == 1:  # ChatGPT does not support video (actually it does, but it's traditional ML-based)
-        content.append({
-            'type': 'text',
-            'text': user_prompt,
-        })
-        content.append({
+    for base64_frame in base64_frames:
+        frame_format = {
             "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{base64_frames[0]}"},
-        })
+            "image_url": {"url": f"data:image/jpeg;base64,{base64_frame}"},
+            "modalities": "video",
+        }
+        content.append(frame_format)
+    content.append({
+        'type': 'text',
+        'text': prompt,
+    })
 
     messages = [{"role": "user", "content": content}]
 
-    request = client.chat.completions.create(
-        model=model,
+    video_request = client.chat.completions.create(
+        model="default",
         messages=messages,
         temperature=0,
         max_tokens=1024,
     )
-    if request.choices[0].message.content:
-        response = request.choices[0].message.content
-    elif request.choices[0].message.refusal:
-        response = request.choices[0].message.refusal
-    return response, request
+    video_response = video_request.choices[0].message.content
+    return video_response
 
 
 def chat(
     client: openai.Client,
     system_prompt: str,
-    user_prompt: str,
-    model: str = "default",
+    user_prompt: str
 ):
     messages = [
         {
@@ -118,15 +104,12 @@ def chat(
         }
     ]
     request = client.chat.completions.create(
-        model=model,
+        model="default",
         messages=messages,
         temperature=0,
-        max_tokens=1024,
+        max_tokens=1024
     )
-    if request.choices[0].message.content:
-        response = request.choices[0].message.content
-    elif request.choices[0].message.refusal:
-        response = request.choices[0].message.refusal
+    response = request.choices[0].message.content
     return response
 
 
