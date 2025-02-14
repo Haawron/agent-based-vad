@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from typing import Literal
 import json
 import base64
@@ -24,8 +27,15 @@ from sglang.utils import (
 )
 
 
-def create_openai_client(base_url):
-    return openai.Client(api_key="EMPTY", base_url=base_url)
+# model names in a single line are aliases for the same model
+OPENAI_MODELS = [
+    'gpt-4o', 'chatgpt-4o-latest',
+    'gpt-4o-mini',
+    'o1',
+    'o1-mini',
+    'o3-mini',
+    'gpt-4-turbo',
+]
 
 
 def get_frames(
@@ -42,7 +52,7 @@ def get_frames(
     for segment_idx in range(num_segments):
         segment_start_idx = segment_idx * num_frames_segment
         segment_end_idx = segment_start_idx + num_frames_segment - 1
-        uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, max_frames_num, dtype=int)
+        uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, max_frames_num + 2, dtype=int)[1:-1]
         frame_idx = uniform_sampled_frames.tolist()
         frames = vr.get_batch(frame_idx).asnumpy()
         yield {
@@ -54,7 +64,7 @@ def get_frames(
         }
 
 
-def generate_video_caption(client: openai.Client, frames, prompt: str):
+def generate_segment_caption(client: openai.Client, frames, user_prompt: str, model: str = "default"):
     base64_frames = []
     for frame in frames:
         pil_img = Image.fromarray(frame)
@@ -64,34 +74,48 @@ def generate_video_caption(client: openai.Client, frames, prompt: str):
         base64_frames.append(base64_str)
 
     content = []
-    for base64_frame in base64_frames:
-        frame_format = {
+    if len(base64_frames) > 1:
+        for base64_frame in base64_frames:
+            frame_format = {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{base64_frame}"},
+                "modalities": "video",
+            }
+            content.append(frame_format)
+        content.append({
+            'type': 'text',
+            'text': user_prompt,
+        })
+    elif len(base64_frames) == 1:  # ChatGPT does not support video (actually it does, but it's traditional ML-based)
+        content.append({
+            'type': 'text',
+            'text': user_prompt,
+        })
+        content.append({
             "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{base64_frame}"},
-            "modalities": "video",
-        }
-        content.append(frame_format)
-    content.append({
-        'type': 'text',
-        'text': prompt,
-    })
+            "image_url": {"url": f"data:image/jpeg;base64,{base64_frames[0]}"},
+        })
 
     messages = [{"role": "user", "content": content}]
 
-    video_request = client.chat.completions.create(
-        model="default",
+    request = client.chat.completions.create(
+        model=model,
         messages=messages,
         temperature=0,
         max_tokens=1024,
     )
-    video_response = video_request.choices[0].message.content
-    return video_response
+    if request.choices[0].message.content:
+        response = request.choices[0].message.content
+    elif request.choices[0].message.refusal:
+        response = request.choices[0].message.refusal
+    return response
 
 
 def chat(
     client: openai.Client,
     system_prompt: str,
-    user_prompt: str
+    user_prompt: str,
+    model: str = "default",
 ):
     messages = [
         {
@@ -103,13 +127,25 @@ def chat(
             "content": user_prompt,
         }
     ]
-    request = client.chat.completions.create(
-        model="default",
-        messages=messages,
-        temperature=0,
-        max_tokens=1024
-    )
-    response = request.choices[0].message.content
+    while True:
+        try:
+            request = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0,
+                max_tokens=1024,
+            )
+        except openai.OpenAIError as e:
+            print(e)
+            print('Retrying in 5 seconds...')
+            time.sleep(5)
+            continue
+        else:
+            break
+    if request.choices[0].message.content:
+        response = request.choices[0].message.content
+    elif request.choices[0].message.refusal:
+        response = request.choices[0].message.refusal
     return response
 
 
@@ -129,7 +165,8 @@ class Main:
         llm_model: str = 'meta-llama/Llama-3.2-3B-Instruct',
         prompt_vlm: str = "Describe the video in a few sentences.",
         prompt_llm_system_language: Literal['en', 'ko'] = "en",
-        duration_sec = 2,
+        duration_sec = 1,
+        debug: bool = False,
     ):
         p_vlm_outdir = Path('output/ucf-crime-captions') / f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/raw"
         df_ann_test = pd.read_csv(
@@ -142,10 +179,14 @@ class Main:
 
         ######################################################################
 
-        server_address = f"http://{host}:{port}"
-        print(f'Waiting for VLM server at {server_address}...', flush=True)
-        wait_for_server(server_address, timeout=600)
-        client = create_openai_client(f"{server_address}/v1")
+        if vlm_model not in OPENAI_MODELS:
+            server_address = f"http://{host}:{port}"
+            print(f'Waiting for VLM server at {server_address}...', flush=True)
+            wait_for_server(server_address, timeout=600)
+            client = openai.Client(api_key="EMPTY", base_url=f"{server_address}/v1")
+        else:
+            print('Using OpenAI API', flush=True)
+            client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
 
         for idx, row in tqdm(
             df_ann_test.iterrows(), total=len(df_ann_test), mininterval=1, file=sys.stdout,
@@ -158,14 +199,14 @@ class Main:
                 p_json.parent.mkdir(exist_ok=True, parents=True)
             label = row['label'] if row['label'] != 'Normal' else 'Testing_Normal_Videos_Anomaly'
             p_anom_video = self.p_videos_root / label / row['video']
-            print(f'\nProcessing {p_anom_video} -> {p_json}', flush=True)
+            print(f'\nProcessing {p_anom_video}\n\t-> {p_json}', flush=True)
             response_records = []
             for frame_dict in get_frames(
                 p_anom_video,
                 duration_sec=duration_sec,
             ):
-                vlm_response: str = generate_video_caption(
-                    client, frame_dict['frames'], prompt=prompt_vlm)
+                vlm_response: str = generate_segment_caption(
+                    client, frame_dict['frames'], user_prompt=prompt_vlm, model=vlm_model)
                 response_record = {
                     'segment_idx': frame_dict['segment_idx'],
                     'start_idx': frame_dict['segment_start_idx'],
@@ -174,6 +215,9 @@ class Main:
                     'score_raw': None,  # placeholder for LLM response
                     'score': None,  # placeholder for LLM response
                 }
+                if debug:
+                    print(f'[{frame_dict["segment_idx"]}/{frame_dict["total_segments"]}] {p_anom_video} -> {p_json}', flush=True)
+                    print(response_record, flush=True, end='\n\n')
                 response_records.append(response_record)
             video_record = {
                 'video': row['video'],  # e.g. 'Abuse001_x264.mp4'
@@ -184,6 +228,7 @@ class Main:
                 'e2': row['e2'],
                 'response_records': response_records,
             }
+            print('Saving ...', flush=True)
             json.dump(video_record, p_json.open('w'), indent=2)
 
     def generate_llm(
@@ -194,7 +239,8 @@ class Main:
         llm_model: str = 'meta-llama/Llama-3.2-3B-Instruct',
         prompt_vlm: str = "Describe the video in a few sentences.",
         prompt_llm_system_language: Literal['en', 'ko'] = "en",
-        duration_sec = 2,
+        duration_sec = 1,
+        debug: bool = False,
     ):
         p_vlm_outdir = Path('output/ucf-crime-captions') / f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/raw"
         df_ann_test = pd.read_csv(
@@ -204,10 +250,14 @@ class Main:
 
         df_ann_test = df_ann_test.iloc[rank::world_size]
 
-        server_address = f"http://{host}:{port}"
-        print(f'Waiting for LLM server at {server_address}...')
-        wait_for_server(server_address, timeout=600)
-        client = create_openai_client(f"{server_address}/v1")
+        if llm_model not in OPENAI_MODELS:
+            server_address = f"http://{host}:{port}"
+            print(f'Waiting for LLM server at {server_address}...', flush=True)
+            wait_for_server(server_address, timeout=600)
+            client = openai.Client(api_key="EMPTY", base_url=f"{server_address}/v1")
+        else:
+            print('Using OpenAI API', flush=True)
+            client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
 
         if prompt_llm_system_language == 'en':
             context_prompt = "The following is a scene description. If you were a law enforcement agency, how would you rate this scene on a scale from 0 to 1, with 0 representing a standard scene and 1 denoting a scene with suspicious activities?"
@@ -230,13 +280,15 @@ class Main:
             if p_json_new.exists():
                 print(f"Skipping {p_json_new}", flush=True)
                 continue
+            print(f'\nProcessing {p_json}\n\t-> {p_json_new}', flush=True)
             p_json_new.parent.mkdir(exist_ok=True, parents=True)
             for response_record in video_record['response_records']:
                 user_prompt = f"Scene Description: {response_record['response']}"
                 llm_response: str = chat(
                     client,
                     system_prompt=system_prompt,
-                    user_prompt=user_prompt
+                    user_prompt=user_prompt,
+                    model=llm_model,
                 )
                 response_record['score_raw'] = llm_response
                 if 'DeepSeek-R1' in llm_model:
@@ -249,6 +301,8 @@ class Main:
                     score = None
                 finally:
                     response_record['score'] = score
+                if debug:
+                    print(response_record, flush=True, end='\n\n')
             json.dump(video_record, p_json_new.open('w'), indent=2)
 
     def evaluate(
@@ -257,7 +311,7 @@ class Main:
         llm_model: str = 'meta-llama/Llama-3.2-3B-Instruct',
         prompt_vlm: str = "Describe the video in a few sentences.",
         prompt_llm_system_language: Literal['en', 'ko'] = "en",
-        duration_sec = 2,
+        duration_sec = 1,
     ):
         if rank != 0:
             print(f'Skipping rank={rank} != 0 for evaluation')

@@ -12,6 +12,9 @@ services:
         while true; do
           echo -e "HTTP/1.1 200 OK\r\n\r\n$$COUNTER" | nc -l -p 5000 -q 1
           COUNTER=$(( COUNTER+1 ))
+          if [ $$COUNTER -gt 8 ]; then
+            break
+          fi
         done
 
   rankclient:
@@ -26,13 +29,13 @@ services:
         apt-get update && apt-get install -y curl
 
         while true; do
-          RANK=$(curl -s http://rankserver:5000)
-          if [ -z "$$RANK" ]; then
+          rank=$(curl -s http://rankserver:5000)
+          if [ -z "$$rank" ]; then
             echo "Rank server is not ready yet"
             sleep 1
             continue
           else
-            echo "Got rank: $$RANK"
+            echo "Got rank: $$rank"
             break
           fi
         done
@@ -40,21 +43,38 @@ services:
       replicas: 8
 
 
-  # torch_worker:
-  #   image: torch
-  #   volumes:
-  #     - /projects3/home/hglee/prjs/agent-based-vad/:/code
-  #     - $HOME/.cache:/home/hglee/.cache
-  #     - /projects3/datasets/UCF_Crimes/:/datasets/UCF_Crimes/
-  #   command: bash scripts/vlm_llm_ucf_eval.sh ${REPLICA_INDEX} 8 'lmms-lab/llava-onevision-qwen2-7b-ov'
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: 1
-  #             capabilities: [gpu]
-  #             device_ids: ['${REPLICA_INDEX}']
+  torch_worker:
+    image: torch
+    depends_on:
+      - rankserver
+    volumes:
+      - /projects3/home/hglee/prjs/agent-based-vad/:/code
+      - $HOME/.cache:/home/hglee/.cache
+      - /projects3/datasets/UCF_Crimes/:/datasets/UCF_Crimes/
+    command: bash scripts/vlm_llm_ucf_eval.sh ${REPLICA_INDEX} 8 'lmms-lab/llava-onevision-qwen2-7b-ov'
+      - bash
+      - -c
+      - |
+        while true; do
+          rank=$(curl -s http://rankserver:5000)
+          if [ -z "$$rank" ]; then
+            echo "Rank server is not ready yet"
+            sleep 1
+            continue
+          else
+            echo "Got rank: $$rank"
+            break
+          fi
+        done
+    deploy:
+      replicas: 8
+      # resources:
+      #   reservations:
+      #     devices:
+      #       - driver: nvidia
+      #         count: 1
+      #         capabilities: [gpu]
+      #         device_ids: ['${REPLICA_INDEX}']
 
 # for i in {0..7}; do
 #     REPLICA_INDEX=$i docker-compose -f docker/docker-compose-multirun-single.yaml up -d
