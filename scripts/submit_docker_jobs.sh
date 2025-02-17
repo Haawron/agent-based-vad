@@ -125,9 +125,17 @@
 ##########################################################################################
 
 # atom03
+# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+# llm_model='deepseek-ai/DeepSeek-R1-Distill-Llama-8B'
+# prompt_vlm='Analyze the provided video clip and list potential cues of anomalous activity. Focus on unusual movements, unexpected interactions, or deviations from typical behavior. For each cue, include a brief description.'
+# prompt_llm_system_language='en'
+
+##########################################################################################
+
+# atom05
 vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
-llm_model='deepseek-ai/DeepSeek-R1-Distill-Llama-8B'
-prompt_vlm='Analyze the provided video clip and list potential cues of anomalous activity. Focus on unusual movements, unexpected interactions, or deviations from typical behavior. For each cue, include a brief description.'
+llm_model='deepseek-ai/DeepSeek-R1-Distill-Qwen-7B'
+prompt_vlm='Describe the video in a few sentences.'
 prompt_llm_system_language='en'
 
 ##########################################################################################
@@ -145,14 +153,14 @@ docker network inspect my-network >/dev/null 2>&1 || docker network create my-ne
 # VLM
 tp_size=4
 world_size=$(( 8 / $tp_size ))
-docker run --gpus all -d -p 30001:30001 --name vlm_server --network my-network --shm-size=8G "${docker_image:-'torch'}" \
+docker run --gpus all -d -p 30001:30001 --name vlm_server --network my-network --shm-size=8G "${docker_image:-torch}" \
     python3 -m sglang_router.launch_server \
         --model-path "${vlm_model:-'lmms-lab/llava-onevision-qwen2-7b-ov'}" \
         --port=30001 \
         --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
         --chat-template=chatml-llava \
         --host='0.0.0.0' \
-        --disable-overlap-schedule --router-policy round_robin
+        --disable-overlap-schedule --router-policy round_robin --mem-fraction-static 0.7
 echo "VLM server is running..."
 sleep 60
 
@@ -164,7 +172,7 @@ for rank in $(seq 0 $(( world_size - 1 ))); do
         --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
         --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
         --name "vlm_worker_${rank:-0}" \
-        "${docker_image:-'torch'}" \
+        "${docker_image:-torch}" \
             python src/vlm_llm_ucf_eval.py generate_vlm \
                 --host vlm_server --port 30001 \
                 --rank ${rank:-0} --world_size ${world_size:-1} \
@@ -181,13 +189,13 @@ echo "VLM server is stopped."
 # LLM
 tp_size=4
 world_size=$(( 8 / $tp_size ))
-docker run --gpus all -d -p 30002:30002 --name llm_server --network my-network --shm-size=8G "${docker_image:-'torch'}" \
+docker run --gpus all -d -p 30002:30002 --name llm_server --network my-network --shm-size=8G "${docker_image:-torch}" \
     python3 -m sglang_router.launch_server \
         --model-path "${llm_model:-'deepseek-ai/DeepSeek-R1-Distill-Llama-8B'}" \
         --port=30002 \
         --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
         --host='0.0.0.0' \
-        --disable-overlap-schedule --router-policy round_robin
+        --disable-overlap-schedule --router-policy round_robin --mem-fraction-static 0.7
 echo "LLM server is running..."
 sleep 60
 
@@ -199,7 +207,7 @@ for rank in $(seq 0 $(( world_size - 1 ))); do
         --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
         --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
         --name "llm_worker_${rank:-0}" \
-        "${docker_image:-'torch'}" \
+        "${docker_image:-torch}" \
             python src/vlm_llm_ucf_eval.py generate_llm \
                 --host llm_server \
                 --port 30002 \

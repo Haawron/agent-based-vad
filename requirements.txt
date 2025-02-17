@@ -10,3 +10,5 @@ fire
 nvitop
 sglang-router
 ipywidgets
+langchain
+langchain-community
