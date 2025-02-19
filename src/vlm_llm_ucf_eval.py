@@ -116,36 +116,55 @@ def chat(
     system_prompt: str,
     user_prompt: str,
     model: str = "default",
+    max_completion_tokens: int | bool = 1024,
 ):
-    messages = [
-        {
-            'role': 'system',
-            'content': system_prompt,
-        },
-        {
-            "role": "user",
-            "content": user_prompt,
-        }
-    ]
-    while True:
+    is_openai_reasoning_model = 'o1' in model or 'o3' in model
+    if is_openai_reasoning_model:
+        messages = [
+            {
+                "role": "user",
+                "content": system_prompt + '\n\n\n' + user_prompt,
+            }
+        ]
+    else:
+        messages = [
+            {
+                'role': 'system',
+                'content': system_prompt,
+            },
+            {
+                "role": "user",
+                "content": user_prompt,
+            }
+        ]
+    max_tries = 5
+    current_try = 0
+    while current_try < max_tries:
         try:
             request = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                temperature=0,
-                max_tokens=1024,
+                temperature=1 if is_openai_reasoning_model else 0,
+                max_completion_tokens=max_completion_tokens,
             )
         except openai.OpenAIError as e:
-            print(e)
-            print('Retrying in 5 seconds...')
+            print(e, file=sys.stderr)
+            print('Retrying in 5 seconds...', file=sys.stderr, flush=True)
             time.sleep(5)
+            current_try += 1
             continue
         else:
             break
+    if current_try == max_tries:
+        print('Failed to get a response from the model', file=sys.stderr)
+        exit(1)
+
     if request.choices[0].message.content:
         response = request.choices[0].message.content
     elif request.choices[0].message.refusal:
         response = request.choices[0].message.refusal
+    else:
+        response = request.choices[0].message.message
     return response
 
 
@@ -233,19 +252,24 @@ class Main:
 
     def generate_llm(
         self,
-        host: str = 'localhost', port: int = 30001,
+        host: str = 'localhost', port: int = 30002,
         rank: int = 0, world_size: int = 1,
         vlm_model: str = 'lmms-lab/llava-onevision-qwen2-7b-ov',
         llm_model: str = 'meta-llama/Llama-3.2-3B-Instruct',
         prompt_vlm: str = "Describe the video in a few sentences.",
         prompt_llm_system_language: Literal['en', 'ko'] = "en",
         duration_sec = 1,
+        process_per_segment: bool = True,
         debug: bool = False,
     ):
         p_vlm_outdir = Path('output/ucf-crime-captions') / f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/raw"
         df_ann_test = pd.read_csv(
             self.p_ann_test, sep=r'\s+', header=None, names=['video', 'label', 's1', 'e1', 's2', 'e2'])
-        p_llm_outdir = p_vlm_outdir.parent / llm_model.replace('/', '-') / prompt_llm_system_language
+        if process_per_segment:
+            p_llm_outdir = p_vlm_outdir.parent / llm_model.replace('/', '-') / prompt_llm_system_language
+        else:
+            assert prompt_llm_system_language == 'en'
+            p_llm_outdir = p_vlm_outdir.parent / llm_model.replace('/', '-') / 'whole'
         p_llm_outdir.mkdir(exist_ok=True, parents=True)
 
         df_ann_test = df_ann_test.iloc[rank::world_size]
@@ -260,8 +284,12 @@ class Main:
             client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
 
         if prompt_llm_system_language == 'en':
-            context_prompt = "The following is a scene description. If you were a law enforcement agency, how would you rate this scene on a scale from 0 to 1, with 0 representing a standard scene and 1 denoting a scene with suspicious activities?"
-            format_prompt = "Please provide the response in the form of a Python list and respond with only one number in the provided list below [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] without any textual explanation. It should begin with '[' and end with  ']'."
+            if process_per_segment:
+                context_prompt = "The following is a scene description. If you were a law enforcement agency, how would you rate this scene on a scale from 0 to 1, with 0 representing a standard scene and 1 denoting a scene with suspicious activities?"
+                format_prompt = "Please provide the response in the form of a Python list and respond with only one number in the provided list below [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] without any textual explanation. It should begin with '[' and end with  ']'."
+            else:
+                context_prompt = "The following are scene descriptions of a video. If you were a law enforcement agency, how would you rate each scene on a scale from 0 to 1, with 0 representing a standard scene and 1 denoting a scene with suspicious activities? The descriptions might be noisy, so rate with considering temporal context."
+                format_prompt = "Please fill the 'rate' values which are provided as `None` in the description. Rate should respond with only one number in the provided list below [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]. The response should be a Python list of dictionaries with 'segment_idx', 'description', 'reason', and 'rate' keys. Don't write a code nor textual explanation. Just fill the 'rate' values. The response should begin with '[' and end with ']'."
         elif prompt_llm_system_language == 'ko':
             context_prompt = "다음은 비디오에 대한 설명이야. 만약 너가 경찰이라면 이 장면의 이상한 정도를 0부터 1까지의 점수 중에 어떻게 평가할 거야? 0은 일상적인 장면이고 1은 의심스러운 활동이 있는 장면이야."
             format_prompt = "아래에 제공된 목록에서 하나의 숫자로만 응답해줘. [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] 이 숫자는 어떤 설명도 없이 제공되어야 해. '['로 시작해서 ']'로 끝나야 해."
@@ -282,27 +310,65 @@ class Main:
                 continue
             print(f'\nProcessing {p_json}\n\t-> {p_json_new}', flush=True)
             p_json_new.parent.mkdir(exist_ok=True, parents=True)
-            for response_record in video_record['response_records']:
-                user_prompt = f"Scene Description: {response_record['response']}"
+
+            if process_per_segment:
+                for response_record in video_record['response_records']:
+                    user_prompt = f"Scene Description: {response_record['response']}"
+                    llm_response: str = chat(
+                        client,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        model=llm_model,
+                    )
+                    response_record['score_raw'] = llm_response
+                    if 'DeepSeek-R1' in llm_model:
+                        llm_response = re.sub(r'^(?s:.)*</think>', '', llm_response).strip()
+                    elif 'o1' in llm_model or 'o3' in llm_model:
+                        llm_response = llm_response.replace('`', '')
+                    try:
+                        score = eval(llm_response)[0]
+                    except Exception as e:
+                        print(e, file=sys.stderr)
+                        print(response_record, llm_response, file=sys.stderr)
+                        score = None
+                    finally:
+                        response_record['score'] = score
+                    if debug:
+                        # print(response_record, flush=True, end='\n\n')
+                        tqdm.write(json.dumps(response_record, indent=2))
+            else:  # process the whole segments at once
+                descriptions = []
+                for response_record in video_record['response_records']:
+                    descriptions.append({
+                        'segment_idx': response_record['segment_idx'],
+                        'description': response_record['response'],
+                        'rate': None,
+                    })
+                video_record['system_prompt'] = system_prompt
+                user_prompt = f"Scene Descriptions: {descriptions}"
                 llm_response: str = chat(
                     client,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     model=llm_model,
+                    max_completion_tokens=False,  # False as `NOT_GIVEN`, NOT_GIVEN: default != None: don't perform
                 )
-                response_record['score_raw'] = llm_response
-                if 'DeepSeek-R1' in llm_model:
-                    llm_response = re.sub(r'^(?s:.)*</think>', '', llm_response).strip()
+                if debug:
+                    tqdm.write(json.dumps(llm_response, indent=2))
                 try:
-                    score = eval(llm_response)[0]
+                    llm_response_eval = eval(llm_response)
                 except Exception as e:
                     print(e, file=sys.stderr)
-                    print(response_record, llm_response, file=sys.stderr)
-                    score = None
-                finally:
-                    response_record['score'] = score
-                if debug:
-                    print(response_record, flush=True, end='\n\n')
+                    llm_response_eval = []
+                if len(llm_response_eval) != len(video_record['response_records']):
+                    llm_response_eval = []
+                if llm_response_eval:
+                    for seg_idx in range(len(video_record['response_records'])):
+                        video_record['response_records'][seg_idx]['score_raw'] = llm_response_eval[seg_idx].get('rate')
+                        if isinstance(llm_response_eval[seg_idx].get('rate'), (int, float)):
+                            video_record['response_records'][seg_idx]['score'] = llm_response_eval[seg_idx].get('rate')
+                        video_record['response_records'][seg_idx]['reason'] = llm_response_eval[seg_idx].get('reason')
+                video_record['raw_response'] = llm_response
             json.dump(video_record, p_json_new.open('w'), indent=2)
 
     def evaluate(

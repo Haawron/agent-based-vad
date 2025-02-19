@@ -90,11 +90,11 @@
 
 # ###
 
-# # atom01 rank1
-# # vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
-# # llm_model='gpt-4o'
-# # prompt_vlm='Describe the video in a few sentences.'
-# # prompt_llm_system_language='en'
+# atom01 rank1
+# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+# llm_model='gpt-4o'
+# prompt_vlm='Describe the video in a few sentences.'
+# prompt_llm_system_language='en'
 
 # ###
 
@@ -125,18 +125,73 @@
 ##########################################################################################
 
 # atom03
-# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
-# llm_model='deepseek-ai/DeepSeek-R1-Distill-Llama-8B'
-# prompt_vlm='Analyze the provided video clip and list potential cues of anomalous activity. Focus on unusual movements, unexpected interactions, or deviations from typical behavior. For each cue, include a brief description.'
-# prompt_llm_system_language='en'
+vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+llm_model='deepseek-ai/DeepSeek-R1-Distill-Llama-8B'
+prompt_vlm='Analyze the provided video clip and list potential cues of anomalous activity. Focus on unusual movements, unexpected interactions, or deviations from typical behavior. For each cue, include a brief description.'
+prompt_llm_system_language='en'
 
 ##########################################################################################
 
 # atom05
 vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
-llm_model='deepseek-ai/DeepSeek-R1-Distill-Qwen-7B'
+llm_model='meta-llama/Llama-3.1-8B-Instruct'
+prompt_vlm='Analyze the provided video clip and list potential cues of anomalous activity. Focus on unusual movements, unexpected interactions, or deviations from typical behavior. For each cue, include a brief description.'
+prompt_llm_system_language='en'
+
+##########################################################################################
+
+# atom05
+# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+# llm_model='deepseek-ai/DeepSeek-R1-Distill-Qwen-7B'
+# prompt_vlm='Describe the video in a few sentences.'
+# prompt_llm_system_language='en'
+
+##########################################################################################
+
+# atom01: whole
+vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+llm_model='meta-llama/Llama-3.1-8B-Instruct'
 prompt_vlm='Describe the video in a few sentences.'
 prompt_llm_system_language='en'
+process_per_segment=False
+
+##########################################################################################
+
+# atom05: whole을 위한 baseline
+# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+# llm_model='meta-llama/Llama-3.3-70B-Instruct'
+# prompt_vlm='Describe the video in a few sentences.'
+# prompt_llm_system_language='en'
+
+##########################################################################################
+
+# atom05: 그냥 큰 모델 성능 보기
+vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+llm_model='deepseek-ai/DeepSeek-R1-Distill-Llama-70B'
+prompt_vlm='Describe the video in a few sentences.'
+prompt_llm_system_language='en'
+
+##########################################################################################
+
+# atom02
+vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+llm_model='o1-mini'
+prompt_vlm='Describe the video in a few sentences.'
+prompt_llm_system_language='en'
+
+docker_image='torch'
+docker run \
+    -d \
+    --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
+    --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
+    --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+    --name "llm_worker" \
+    "$docker_image" \
+        python src/vlm_llm_ucf_eval.py generate_llm \
+            --llm_model "$llm_model" \
+            --prompt_vlm "$prompt_vlm" \
+            --prompt_llm_system_language "$prompt_llm_system_language" \
+            --duration_sec 1
 
 ##########################################################################################
 
@@ -160,7 +215,8 @@ docker run --gpus all -d -p 30001:30001 --name vlm_server --network my-network -
         --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
         --chat-template=chatml-llava \
         --host='0.0.0.0' \
-        --disable-overlap-schedule --router-policy round_robin --mem-fraction-static 0.7
+        --disable-overlap-schedule --router-policy round_robin \
+        --mem-fraction-static 0.85 --random-seed 1234
 echo "VLM server is running..."
 sleep 60
 
@@ -195,7 +251,8 @@ docker run --gpus all -d -p 30002:30002 --name llm_server --network my-network -
         --port=30002 \
         --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
         --host='0.0.0.0' \
-        --disable-overlap-schedule --router-policy round_robin --mem-fraction-static 0.7
+        --disable-overlap-schedule --router-policy round_robin \
+        --mem-fraction-static 0.85 --random-seed 1234
 echo "LLM server is running..."
 sleep 60
 
@@ -215,6 +272,7 @@ for rank in $(seq 0 $(( world_size - 1 ))); do
                 --llm_model "$llm_model" \
                 --prompt_vlm "$prompt_vlm" \
                 --prompt_llm_system_language "$prompt_llm_system_language" \
+                --process_per_segment ${process_per_segment:-True} \
                 --duration_sec 1
 done
 docker wait $(docker ps -q --filter "name=llm_worker_*")

@@ -12,3 +12,4 @@ sglang-router
 ipywidgets
 langchain
 langchain-community
+huggingface-hub

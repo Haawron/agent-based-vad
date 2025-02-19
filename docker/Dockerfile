@@ -1,3 +1,5 @@
+# DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile -t torch --build-arg UID=$(id -u) --build-arg GID=$(id -g) .
+
 FROM ubuntu:22.04 AS base
 
 ARG UID
@@ -64,7 +66,10 @@ RUN echo 'eval "$(starship init zsh)"' >> ~/.zshrc && \
     mkdir ~/.config && \
     starship preset pastel-powerline -o ~/.config/starship.toml
 
-
 WORKDIR /code
+
+# login to huggingface
+COPY --chmod=0644 .env .
+RUN python -c "import os; from dotenv import load_dotenv; load_dotenv(); from huggingface_hub._login import _login; _login(token=os.environ['HF_TOKEN'], add_to_git_credential=False)"
 
 CMD ["zsh"]
