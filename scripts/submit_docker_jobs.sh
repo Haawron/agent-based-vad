@@ -109,7 +109,7 @@
 #     --name "llm_worker_$rank" \
 #     "$docker_image" \
 #         python src/vlm_llm_ucf_eval.py generate_llm \
-#             --llm_model "$llm_model" \
+#             --vlm_model "$vlm_model" --llm_model "$llm_model" \
 #             --prompt_vlm "$prompt_vlm" \
 #             --prompt_llm_system_language "$prompt_llm_system_language" \
 #             --duration_sec 1
@@ -165,11 +165,11 @@ process_per_segment=False
 
 ##########################################################################################
 
-# atom05: 그냥 큰 모델 성능 보기
-vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
-llm_model='deepseek-ai/DeepSeek-R1-Distill-Llama-70B'
-prompt_vlm='Describe the video in a few sentences.'
-prompt_llm_system_language='en'
+# atom05: 그냥 큰 모델 성능 보기 --> 200시간 걸려서 끔
+# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+# llm_model='deepseek-ai/DeepSeek-R1-Distill-Llama-70B'
+# prompt_vlm='Describe the video in a few sentences.'
+# prompt_llm_system_language='en'
 
 ##########################################################################################
 
@@ -188,10 +188,19 @@ docker run \
     --name "llm_worker" \
     "$docker_image" \
         python src/vlm_llm_ucf_eval.py generate_llm \
-            --llm_model "$llm_model" \
+            --vlm_model "$vlm_model" --llm_model "$llm_model" \
             --prompt_vlm "$prompt_vlm" \
             --prompt_llm_system_language "$prompt_llm_system_language" \
             --duration_sec 1
+
+##########################################################################################
+
+# atom05: 좋은 비전 모델
+vlm_model='meta-llama/Llama-3.2-11B-Vision-Instruct'
+chat_template='llama_3_vision'
+llm_model='meta-llama/Llama-3.1-8B-Instruct'
+prompt_vlm='Describe the video in a few sentences.'
+prompt_llm_system_language='en'
 
 ##########################################################################################
 
@@ -213,10 +222,10 @@ docker run --gpus all -d -p 30001:30001 --name vlm_server --network my-network -
         --model-path "${vlm_model:-'lmms-lab/llava-onevision-qwen2-7b-ov'}" \
         --port=30001 \
         --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
-        --chat-template=chatml-llava \
+        --chat-template="${chat_template:-'chatml-llava'}" \
         --host='0.0.0.0' \
         --disable-overlap-schedule --router-policy round_robin \
-        --mem-fraction-static 0.85 --random-seed 1234
+        --mem-fraction-static 0.85 --random-seed 1234 --show-time-cost --enable-metrics
 echo "VLM server is running..."
 sleep 60
 
@@ -232,7 +241,7 @@ for rank in $(seq 0 $(( world_size - 1 ))); do
             python src/vlm_llm_ucf_eval.py generate_vlm \
                 --host vlm_server --port 30001 \
                 --rank ${rank:-0} --world_size ${world_size:-1} \
-                --llm_model "$llm_model" \
+                --vlm_model "$vlm_model" --llm_model "$llm_model" \
                 --prompt_vlm "$prompt_vlm" \
                 --prompt_llm_system_language "$prompt_llm_system_language" \
                 --duration_sec 1
@@ -252,7 +261,7 @@ docker run --gpus all -d -p 30002:30002 --name llm_server --network my-network -
         --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
         --host='0.0.0.0' \
         --disable-overlap-schedule --router-policy round_robin \
-        --mem-fraction-static 0.85 --random-seed 1234
+        --mem-fraction-static 0.85 --random-seed 1234 --show-time-cost --enable-metrics
 echo "LLM server is running..."
 sleep 60
 
@@ -269,7 +278,7 @@ for rank in $(seq 0 $(( world_size - 1 ))); do
                 --host llm_server \
                 --port 30002 \
                 --rank ${rank:-0} --world_size ${world_size:-1} \
-                --llm_model "$llm_model" \
+                --vlm_model "$vlm_model" --llm_model "$llm_model" \
                 --prompt_vlm "$prompt_vlm" \
                 --prompt_llm_system_language "$prompt_llm_system_language" \
                 --process_per_segment ${process_per_segment:-True} \
