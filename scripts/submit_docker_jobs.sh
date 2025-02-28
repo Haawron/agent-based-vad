@@ -125,18 +125,18 @@
 ##########################################################################################
 
 # atom03
-vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
-llm_model='deepseek-ai/DeepSeek-R1-Distill-Llama-8B'
-prompt_vlm='Analyze the provided video clip and list potential cues of anomalous activity. Focus on unusual movements, unexpected interactions, or deviations from typical behavior. For each cue, include a brief description.'
-prompt_llm_system_language='en'
+# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+# llm_model='deepseek-ai/DeepSeek-R1-Distill-Llama-8B'
+# prompt_vlm='Analyze the provided video clip and list potential cues of anomalous activity. Focus on unusual movements, unexpected interactions, or deviations from typical behavior. For each cue, include a brief description.'
+# prompt_llm_system_language='en'
 
 ##########################################################################################
 
 # atom05
-vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
-llm_model='meta-llama/Llama-3.1-8B-Instruct'
-prompt_vlm='Analyze the provided video clip and list potential cues of anomalous activity. Focus on unusual movements, unexpected interactions, or deviations from typical behavior. For each cue, include a brief description.'
-prompt_llm_system_language='en'
+# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+# llm_model='meta-llama/Llama-3.1-8B-Instruct'
+# prompt_vlm='Analyze the provided video clip and list potential cues of anomalous activity. Focus on unusual movements, unexpected interactions, or deviations from typical behavior. For each cue, include a brief description.'
+# prompt_llm_system_language='en'
 
 ##########################################################################################
 
@@ -174,10 +174,104 @@ process_per_segment=False
 ##########################################################################################
 
 # atom02
-vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
-llm_model='o1-mini'
+# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+# llm_model='o1-mini'
+# prompt_vlm='Describe the video in a few sentences.'
+# prompt_llm_system_language='en'
+
+# docker_image='torch'
+# docker run \
+#     -d \
+#     --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
+#     --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
+#     --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+#     --name "llm_worker" \
+#     "$docker_image" \
+#         python src/vlm_llm_ucf_eval.py generate_llm \
+#             --vlm_model "$vlm_model" --llm_model "$llm_model" \
+#             --prompt_vlm "$prompt_vlm" \
+#             --prompt_llm_system_language "$prompt_llm_system_language" \
+#             --duration_sec 1
+
+##########################################################################################
+
+# atom05: 좋은 비전 모델 -> atom01
+vlm_model='meta-llama/Llama-3.2-11B-Vision-Instruct'
+chat_template='llama_3_vision'
+llm_model='meta-llama/Llama-3.1-8B-Instruct'
 prompt_vlm='Describe the video in a few sentences.'
 prompt_llm_system_language='en'
+
+##########################################################################################
+
+# atom03,05: 좋은 비전 모델
+# vlm_model='meta-llama/Llama-3.2-90B-Vision-Instruct'
+# chat_template='llama_3_vision'
+# llm_model='meta-llama/Llama-3.1-8B-Instruct'
+# prompt_vlm='Describe the video in a few sentences.'
+# prompt_llm_system_language='en'
+
+# docker_image='torch'
+
+# tp_size=16
+# world_size=1
+
+# ###
+
+# node_rank=0
+# docker run --gpus all -it --name vlm_server --network host --shm-size=32G \
+#     -e NCCL_SOCKET_IFNAME=nebula1 -e GLOO_SOCKET_IFNAME=nebula1 -e SGLANG_HOST_IP='10.90.21.21' \
+#     -e OUTLINES_CACHE_DIR=/tmp/outlines \
+#     --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
+#     "${docker_image:-torch}" \
+#         python3 -m sglang.launch_server \
+#             --nnodes=2 --node-rank=$node_rank \
+#             --model-path "${vlm_model:-'lmms-lab/llava-onevision-qwen2-7b-ov'}" \
+#             --host='10.90.21.21' --port=50001 \
+#             --nccl-init-addr='10.90.21.21:50002' \
+#             --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
+#             --chat-template="${chat_template:-'chatml-llava'}" \
+#             --mem-fraction-static 0.7 --random-seed 1234 --enable-metrics --disable-cuda-graph
+
+# ###
+
+# node_rank=1
+# docker run --gpus all -it --name vlm_server --network host --shm-size=32G \
+#     -e NCCL_SOCKET_IFNAME=nebula1 -e GLOO_SOCKET_IFNAME=nebula1 -e SGLANG_HOST_IP='10.90.21.21' \
+#     -e OUTLINES_CACHE_DIR=/tmp/outlines \
+#     --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
+#     "${docker_image:-torch}" \
+#         python3 -m sglang.launch_server \
+#             --nnodes=2 --node-rank=$node_rank \
+#             --model-path "${vlm_model:-'lmms-lab/llava-onevision-qwen2-7b-ov'}" \
+#             --host='10.90.21.120' --port=50001 \
+#             --nccl-init-addr='10.90.21.21:50002' \
+#             --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
+#             --chat-template="${chat_template:-'chatml-llava'}" \
+#             --mem-fraction-static 0.7 --random-seed 1234 --enable-metrics --disable-cuda-graph
+
+# ###
+
+# docker run \
+#     --rm -d --network host \
+#     --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
+#     --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
+#     --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+#     --name "vlm_worker" \
+#     "${docker_image:-torch}" \
+#         python src/vlm_llm_ucf_eval.py generate_vlm \
+#             --host '10.90.21.21' --port 50001 \
+#             --rank ${rank:-0} --world_size ${world_size:-1} \
+#             --vlm_model "$vlm_model" --llm_model "$llm_model" \
+#             --prompt_vlm "$prompt_vlm" \
+#             --prompt_llm_system_language "$prompt_llm_system_language" \
+#             --duration_sec 1
+
+##########################################################################################
+
+# atom02
+vlm_model='gpt-4o'
+prompt_vlm="How anomalous is this video? Please rate from 0 to 1 with 0 being not anomalous and 1 being very anomalous and provide an explanation in a few sentences in provided json format."
 
 docker_image='torch'
 docker run \
@@ -185,22 +279,11 @@ docker run \
     --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
     --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
     --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
-    --name "llm_worker" \
+    --name "worker" \
     "$docker_image" \
-        python src/vlm_llm_ucf_eval.py generate_llm \
-            --vlm_model "$vlm_model" --llm_model "$llm_model" \
+        python src/vlm_llm_ucf_eval.py generate_integrated_parsed \
+            --vlm_model "$vlm_model" \
             --prompt_vlm "$prompt_vlm" \
-            --prompt_llm_system_language "$prompt_llm_system_language" \
-            --duration_sec 1
-
-##########################################################################################
-
-# atom05: 좋은 비전 모델
-vlm_model='meta-llama/Llama-3.2-11B-Vision-Instruct'
-chat_template='llama_3_vision'
-llm_model='meta-llama/Llama-3.1-8B-Instruct'
-prompt_vlm='Describe the video in a few sentences.'
-prompt_llm_system_language='en'
 
 ##########################################################################################
 
@@ -217,15 +300,17 @@ docker network inspect my-network >/dev/null 2>&1 || docker network create my-ne
 # VLM
 tp_size=4
 world_size=$(( 8 / $tp_size ))
-docker run --gpus all -d -p 30001:30001 --name vlm_server --network my-network --shm-size=8G "${docker_image:-torch}" \
-    python3 -m sglang_router.launch_server \
-        --model-path "${vlm_model:-'lmms-lab/llava-onevision-qwen2-7b-ov'}" \
-        --port=30001 \
-        --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
-        --chat-template="${chat_template:-'chatml-llava'}" \
-        --host='0.0.0.0' \
-        --disable-overlap-schedule --router-policy round_robin \
-        --mem-fraction-static 0.85 --random-seed 1234 --show-time-cost --enable-metrics
+docker run --gpus all -d -p 30001:30001 --name vlm_server --network my-network --shm-size=8G \
+    --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
+    "${docker_image:-torch}" \
+        python3 -m sglang_router.launch_server \
+            --model-path "${vlm_model:-'lmms-lab/llava-onevision-qwen2-7b-ov'}" \
+            --port=30001 \
+            --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
+            --chat-template="${chat_template:-'chatml-llava'}" \
+            --host='0.0.0.0' \
+            --disable-overlap-schedule --router-policy round_robin \
+            --mem-fraction-static 0.8 --random-seed 1234 --enable-metrics
 echo "VLM server is running..."
 sleep 60
 
@@ -254,14 +339,16 @@ echo "VLM server is stopped."
 # LLM
 tp_size=4
 world_size=$(( 8 / $tp_size ))
-docker run --gpus all -d -p 30002:30002 --name llm_server --network my-network --shm-size=8G "${docker_image:-torch}" \
-    python3 -m sglang_router.launch_server \
-        --model-path "${llm_model:-'deepseek-ai/DeepSeek-R1-Distill-Llama-8B'}" \
-        --port=30002 \
-        --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
-        --host='0.0.0.0' \
-        --disable-overlap-schedule --router-policy round_robin \
-        --mem-fraction-static 0.85 --random-seed 1234 --show-time-cost --enable-metrics
+docker run --gpus all -d -p 30002:30002 --name llm_server --network my-network --shm-size=8G \
+    --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
+    "${docker_image:-torch}" \
+        python3 -m sglang_router.launch_server \
+            --model-path "${llm_model:-'deepseek-ai/DeepSeek-R1-Distill-Llama-8B'}" \
+            --port=30002 \
+            --tp-size=${tp_size:-4} --dp-size=${world_size:-2} \
+            --host='0.0.0.0' \
+            --disable-overlap-schedule --router-policy round_robin \
+            --mem-fraction-static 0.8 --random-seed 1234 --enable-metrics
 echo "LLM server is running..."
 sleep 60
 

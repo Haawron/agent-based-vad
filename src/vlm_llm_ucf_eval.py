@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 import subprocess
 
+from pydantic import BaseModel, Field
+
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score, roc_curve
@@ -40,7 +42,7 @@ OPENAI_MODELS = [
 
 def get_frames(
     p_video,
-    duration_sec = 2,
+    duration_sec = 1,
     max_frames_num = 32,
 ):
     FPS = 30
@@ -64,19 +66,31 @@ def get_frames(
         }
 
 
+def frames_to_base64(frames):
+    img_list = []
+    for frame in frames:
+        img = Image.fromarray(frame)
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
+        img_list.append(base64.b64encode(img_byte_arr).decode('utf-8'))
+    return img_list
+
+
 def generate_segment_caption(
     client: openai.Client,
-    frames,
+    base64_frames,
     user_prompt: str,
-    model: str = "default"
+    model: str = "default",
+    response_format: None | BaseModel = None,
 ):
-    base64_frames = []
-    for frame in frames:
-        pil_img = Image.fromarray(frame)
-        buff = io.BytesIO()
-        pil_img.save(buff, format="JPEG")
-        base64_str = base64.b64encode(buff.getvalue()).decode("utf-8")
-        base64_frames.append(base64_str)
+    # base64_frames = []
+    # for frame in frames:
+    #     pil_img = Image.fromarray(frame)
+    #     buff = io.BytesIO()
+    #     pil_img.save(buff, format="JPEG")
+    #     base64_str = base64.b64encode(buff.getvalue()).decode("utf-8")
+    #     base64_frames.append(base64_str)
 
     content = []
     if len(base64_frames) > 1:
@@ -103,12 +117,23 @@ def generate_segment_caption(
 
     messages = [{"role": "user", "content": content}]
 
-    request = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0,
-        max_tokens=1024,
-    )
+    if response_format is None:
+        request = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0,
+            max_tokens=1024,
+            seed=1234,
+        )
+    else:
+        request = client.beta.chat.completions.parse(
+            model=model,
+            messages=messages,
+            temperature=0,
+            max_tokens=1024,
+            seed=1234,
+            response_format=response_format,
+        )
     if request.choices[0].message.content:
         response = request.choices[0].message.content
     elif request.choices[0].message.refusal:
@@ -150,7 +175,7 @@ def chat(
     elif request.choices[0].message.refusal:
         response = request.choices[0].message.refusal
     else:
-        response = str(request.choices[0].message)
+        response = str(request.choices[0])
     return response
 
 
@@ -198,7 +223,7 @@ class Main:
             client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
 
         for idx, row in tqdm(
-            df_ann_test.iterrows(), total=len(df_ann_test), mininterval=1, file=sys.stdout,
+            df_ann_test.iterrows(), total=len(df_ann_test), file=sys.stdout,
         ):
             p_json = (p_vlm_outdir / row['label'] / row['video']).with_suffix('.json')
             if p_json.exists():
@@ -215,8 +240,9 @@ class Main:
                 duration_sec=duration_sec,
                 max_frames_num=max_frames_num,
             ):
+                base64_frames = frames_to_base64(frame_dict['frames'])
                 vlm_response: str = generate_segment_caption(
-                    client, frame_dict['frames'], user_prompt=prompt_vlm, model=vlm_model)
+                    client, base64_frames, user_prompt=prompt_vlm, model=vlm_model)
                 response_record = {
                     'segment_idx': frame_dict['segment_idx'],
                     'start_idx': frame_dict['segment_start_idx'],
@@ -241,9 +267,94 @@ class Main:
             print('Saving ...', flush=True)
             json.dump(video_record, p_json.open('w'), indent=2)
 
+    def generate_integrated_parsed(
+        self,
+        host: str = 'localhost', port: int = 50002,
+        rank: int = 0, world_size: int = 1,
+        vlm_model: str = 'gpt-4o',
+        prompt_vlm: str = "How anomalous is this video? Please rate from 0 to 1 with 0 being not anomalous and 1 being very anomalous and provide an explanation in a few sentences in provided json format.",
+        duration_sec = 1,
+        process_per_segment: bool = True,
+        debug: bool = False,
+    ):
+        max_frames_num = 32 if 'onevision' in vlm_model else 1
+
+        p_outdir = Path('output/ucf-crime-captions') /\
+            vlm_model.replace('/', '-') /\
+            f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/" /\
+            vlm_model.replace('/', '-') / 'per-segment'
+        p_outdir.mkdir(exist_ok=True, parents=True)
+
+        df_ann_test = pd.read_csv(
+            self.p_ann_test, sep=r'\s+', header=None, names=['video', 'label', 's1', 'e1', 's2', 'e2'])
+        df_ann_test = df_ann_test.iloc[rank::world_size]
+
+        ######################################################################
+
+        if vlm_model in OPENAI_MODELS:
+            print('Using OpenAI API', flush=True)
+            client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
+        else:
+            server_address = f"http://{host}:{port}"
+            print(f'Waiting for LLM server at {server_address}...', flush=True)
+            wait_for_server(server_address, timeout=600)
+            client = openai.Client(api_key="EMPTY", base_url=f"{server_address}/v1")
+
+        ######################################################################
+
+        class Base(BaseModel):
+            anomaly_score: float = Field(..., title="Anomaly Score", description="Anomaly score of the input text")
+            explanation: str = Field(..., title="Explanation", description="Explanation of the anomaly score")
+
+        for idx, row in tqdm(
+            df_ann_test.iterrows(), total=len(df_ann_test), file=sys.stdout,
+        ):
+            p_json = (p_outdir / row['label'] / row['video']).with_suffix('.json')
+            if p_json.exists():
+                print(f"Skipping {p_json}", flush=True)
+                continue
+            else:
+                p_json.parent.mkdir(exist_ok=True, parents=True)
+            label = row['label'] if row['label'] != 'Normal' else 'Testing_Normal_Videos_Anomaly'
+            p_anom_video = self.p_videos_root / label / row['video']
+            print(f'\nProcessing {p_anom_video}\n\t-> {p_json}', flush=True)
+            response_records = []
+            for frame_dict in get_frames(
+                p_anom_video,
+                duration_sec=duration_sec,
+                max_frames_num=max_frames_num,
+            ):
+                base64_frames = frames_to_base64(frame_dict['frames'])
+                vlm_response_raw: str = generate_segment_caption(
+                    client, base64_frames, user_prompt=prompt_vlm, model=vlm_model, response_format=Base)
+                vlm_response = eval(vlm_response_raw)
+                response_record = {
+                    'segment_idx': frame_dict['segment_idx'],
+                    'start_idx': frame_dict['segment_start_idx'],
+                    'end_idx': frame_dict['segment_end_idx'],
+                    'response': vlm_response_raw,
+                    'score': vlm_response['anomaly_score'],
+                    'explanation': vlm_response['explanation'],
+                }
+                if debug:
+                    print(f'[{frame_dict["segment_idx"]}/{frame_dict["total_segments"]}] {p_anom_video} -> {p_json}', flush=True)
+                    print(response_record, flush=True, end='\n\n')
+                response_records.append(response_record)
+            video_record = {
+                'video': row['video'],  # e.g. 'Abuse001_x264.mp4'
+                'label': row['label'],  # e.g. 'Abuse', 'Normal', ...
+                's1': row['s1'],
+                'e1': row['e1'],
+                's2': row['s2'],
+                'e2': row['e2'],
+                'response_records': response_records,
+            }
+            print('Saving ...', flush=True)
+            json.dump(video_record, p_json.open('w'), indent=2)
+
     def generate_llm(
         self,
-        host: str = 'localhost', port: int = 30002,
+        host: str = 'localhost', port: int = 50002,
         rank: int = 0, world_size: int = 1,
         vlm_model: str = 'lmms-lab/llava-onevision-qwen2-7b-ov',
         llm_model: str = 'meta-llama/Llama-3.2-3B-Instruct',

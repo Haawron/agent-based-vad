@@ -41,8 +41,8 @@ RUN locale-gen en_US.UTF-8 && \
 
 
 # Install python packages
-RUN pip install --no-cache-dir sgl-kernel --force-reinstall --no-deps && \
-    pip install --no-cache-dir "sglang[all]>=0.4.2.post2" --find-links https://flashinfer.ai/whl/cu124/torch2.5/flashinfer/
+RUN pip install transformers==4.48.3 sgl-kernel --force-reinstall --no-deps && \
+    pip install "sglang[all]>=0.4.3.post2" --find-links https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     rm requirements.txt
@@ -70,6 +70,7 @@ WORKDIR /code
 
 # login to huggingface
 COPY --chmod=0644 .env .
-RUN python -c "import os; from dotenv import load_dotenv; load_dotenv(); from huggingface_hub._login import _login; _login(token=os.environ['HF_TOKEN'], add_to_git_credential=False)"
+
+# RUN python -c "import os; from dotenv import load_dotenv; load_dotenv(); from huggingface_hub._login import _login; _login(token=os.environ['HF_TOKEN'], add_to_git_credential=False)"
 
 CMD ["zsh"]
