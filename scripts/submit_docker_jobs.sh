@@ -149,11 +149,11 @@
 ##########################################################################################
 
 # atom01: whole
-vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
-llm_model='meta-llama/Llama-3.1-8B-Instruct'
-prompt_vlm='Describe the video in a few sentences.'
-prompt_llm_system_language='en'
-process_per_segment=False
+# vlm_model='lmms-lab/llava-onevision-qwen2-7b-ov'
+# llm_model='meta-llama/Llama-3.1-8B-Instruct'
+# prompt_vlm='Describe the video in a few sentences.'
+# prompt_llm_system_language='en'
+# process_per_segment=False
 
 ##########################################################################################
 
@@ -196,11 +196,11 @@ process_per_segment=False
 ##########################################################################################
 
 # atom05: 좋은 비전 모델 -> atom01
-vlm_model='meta-llama/Llama-3.2-11B-Vision-Instruct'
-chat_template='llama_3_vision'
-llm_model='meta-llama/Llama-3.1-8B-Instruct'
-prompt_vlm='Describe the video in a few sentences.'
-prompt_llm_system_language='en'
+# vlm_model='meta-llama/Llama-3.2-11B-Vision-Instruct'
+# chat_template='llama_3_vision'
+# llm_model='meta-llama/Llama-3.1-8B-Instruct'
+# prompt_vlm='Describe the video in a few sentences.'
+# prompt_llm_system_language='en'
 
 ##########################################################################################
 
@@ -284,6 +284,28 @@ docker run \
         python src/vlm_llm_ucf_eval.py generate_integrated_parsed \
             --vlm_model "$vlm_model" \
             --prompt_vlm "$prompt_vlm" \
+
+##########################################################################################
+
+# atom02
+vlm_model='gpt-4o'
+llm_model='gpt-4o'
+prompt_vlm='Describe the video in a few sentences.'
+prompt_llm_system_language='en'
+
+docker_image='torch'
+docker run \
+    -d \
+    --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
+    --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
+    --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+    --name "vlm_worker" \
+    "$docker_image" \
+        python src/vlm_llm_ucf_eval.py generate_vlm \
+            --vlm_model "$vlm_model" --llm_model "$llm_model" \
+            --prompt_vlm "$prompt_vlm" \
+            --prompt_llm_system_language "$prompt_llm_system_language" \
+            --duration_sec 1
 
 ##########################################################################################
 

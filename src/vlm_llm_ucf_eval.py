@@ -497,12 +497,11 @@ class Main:
             print(f'Skipping rank={rank} != 0 for evaluation')
             return
 
-        p_vlm_outdir = Path('output/ucf-crime-captions') /\
+        p_outdir = Path('output/ucf-crime-captions') /\
             vlm_model.replace('/', '-') /\
-            f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/raw"
-        p_vlm_outdir.mkdir(exist_ok=True, parents=True)
-        p_llm_outdir = p_vlm_outdir.parent / llm_model.replace('/', '-') / prompt_llm_system_language
-        p_llm_outdir.mkdir(exist_ok=True, parents=True)
+            f"prompt={prompt_vlm.replace(' ', '_')}_duration_{duration_sec}s/" /\
+            vlm_model.replace('/', '-') / 'per-segment'
+        # p_outdir.mkdir(exist_ok=True, parents=True)
 
         df_ann_test = pd.read_csv(
             self.p_ann_test, sep=r'\s+', header=None, names=['video', 'label', 's1', 'e1', 's2', 'e2'])
@@ -520,7 +519,7 @@ class Main:
 
         preds = {}
         for key, bin_label in ann_vad.items():
-            p_json = (p_llm_outdir / key).with_suffix('.json')
+            p_json = (p_outdir / key).with_suffix('.json')
             video_record = json.load(p_json.open())
             records = video_record['response_records']
             pred = np.zeros(len(bin_label))
