@@ -2,5 +2,9 @@
 logs/
 tmp/
 output/
+output*
 data/
 *.tar
+*.egg-info/
+build/
+__pycache__/

@@ -13,3 +13,4 @@ ipywidgets
 langchain
 langchain-community
 huggingface-hub
+datasets

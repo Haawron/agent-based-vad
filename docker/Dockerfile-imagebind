@@ -1,0 +1,57 @@
+# DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile-imagebind -t imagebind --build-arg UID=$(id -u) --build-arg GID=$(id -g) .
+
+FROM ubuntu:22.04 AS base
+
+ARG UID
+ARG GID
+ARG USERNAME=hglee
+
+RUN groupadd -g ${GID} ${USERNAME} && \
+    useradd -m -u ${UID} -g ${USERNAME} ${USERNAME}
+
+# ----------------------------------------------------------------------
+
+FROM pytorch/pytorch:1.13.0-cuda11.6-cudnn8-runtime
+ARG USERNAME=hglee
+
+# Copy only the minimal needed configuration or files.
+COPY --from=base /etc/passwd /etc/passwd
+COPY --from=base /etc/group /etc/group
+RUN mkdir -p /home/${USERNAME} && chown ${USERNAME}:${USERNAME} /home/${USERNAME}
+# Add user to sudo group
+RUN usermod -aG sudo ${USERNAME}
+
+RUN sed -i 's@archive.ubuntu.com@mirror.kakao.com@g' /etc/apt/sources.list
+
+ENV TZ=Asia/Seoul
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y \
+        vim git zsh htop iftop tmux unzip zip curl wget tree ncdu \
+        tzdata bzip2 build-essential net-tools iputils-ping locales && \
+    ln -fs /usr/share/zoneinfo/$TZ /etc/localtime && \
+    dpkg-reconfigure --frontend noninteractive tzdata && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
+RUN curl -fsSL https://starship.rs/install.sh | sh -s -- -y
+
+RUN locale-gen en_US.UTF-8 && \
+    locale-gen ko_KR.UTF-8 && \
+    update-locale LANG=en_US.UTF-8
+
+
+# Install python packages
+RUN git clone https://github.com/facebookresearch/ImageBind.git /imagebind && rm /imagebind/requirements.txt
+COPY libs/imagebind/requirements.txt /imagebind
+RUN cd /imagebind && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu116 .
+RUN rm -rf /imagebind
+RUN python -c "import imagebind; print(imagebind.__file__)"
+
+# ----------------------------------------------------------------------
+
+# RUN chsh -s /usr/bin/zsh ${USERNAME}
+USER ${USERNAME}
+
+WORKDIR /code
+
+CMD ["bash"]

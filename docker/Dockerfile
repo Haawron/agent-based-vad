@@ -1,5 +1,8 @@
 # DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile -t torch --build-arg UID=$(id -u) --build-arg GID=$(id -g) .
 
+# Usage:
+    # docker run -dit --gpus all --pid host --network host --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ --name vscode torch zsh
+
 FROM ubuntu:22.04 AS base
 
 ARG UID
@@ -65,6 +68,47 @@ RUN sed -i '1s/^/export ZSH_DOTENV_PROMPT=false\n/' ~/.zshrc
 RUN echo 'eval "$(starship init zsh)"' >> ~/.zshrc && \
     mkdir ~/.config && \
     starship preset pastel-powerline -o ~/.config/starship.toml
+
+# ----------------------------------------------------------------------
+
+RUN mkdir -p /home/hglee/.config/htop && \
+echo 'fields=0 48 17 18 38 39 40 2 46 47 49 1 \n\
+sort_key=46 \n\
+sort_direction=-1 \n\
+tree_sort_key=0 \n\
+tree_sort_direction=1 \n\
+hide_kernel_threads=1 \n\
+hide_userland_threads=0 \n\
+shadow_other_users=0 \n\
+show_thread_names=0 \n\
+show_program_path=1 \n\
+highlight_base_name=0 \n\
+highlight_megabytes=1 \n\
+highlight_threads=1 \n\
+highlight_changes=0 \n\
+highlight_changes_delay_secs=5 \n\
+find_comm_in_cmdline=1 \n\
+strip_exe_from_cmdline=1 \n\
+show_merged_command=0 \n\
+tree_view=0 \n\
+tree_view_always_by_pid=0 \n\
+header_margin=1 \n\
+detailed_cpu_time=0 \n\
+cpu_count_from_one=0 \n\
+show_cpu_usage=1 \n\
+show_cpu_frequency=0 \n\
+show_cpu_temperature=0 \n\
+degree_fahrenheit=0 \n\
+update_process_names=0 \n\
+account_guest_in_cpu_meter=0 \n\
+color_scheme=0 \n\
+enable_mouse=1 \n\
+delay=15 \n\
+left_meters=LeftCPUs2 Memory Swap \n\
+left_meter_modes=1 1 1 \n\
+right_meters=RightCPUs2 Tasks LoadAverage Uptime \n\
+right_meter_modes=1 2 2 2 \n\
+hide_function_bar=0' > /home/hglee/.config/htop/htoprc
 
 WORKDIR /code
 

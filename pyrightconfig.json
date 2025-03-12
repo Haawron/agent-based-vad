@@ -5,6 +5,7 @@
         "data/",
         "logs/",
         "output/",
+        "output copy/",
         "datasets/",
     ],
     "reportPrivateImportUsage": false,  // pytorch is not familiar with the private import

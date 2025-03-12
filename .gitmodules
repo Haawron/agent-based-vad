@@ -1,3 +1,7 @@
 [submodule "libs/llava"]
 	path = libs/llava
 	url = git@github.com:LLaVA-VL/LLaVA-NeXT.git
+[submodule "libs/imagebind"]
+	path = libs/imagebind
+	url = https://github.com/nielsrogge/ImageBind.git
+	branch = feature/add_hf
