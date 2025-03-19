@@ -24,40 +24,28 @@ from PIL import Image
 from tqdm import tqdm
 
 import openai
-from sglang.utils import (
-    execute_shell_command,
-    wait_for_server,
-    terminate_process,
-)
+sys.path.append('src')
+from src.helper import get_client, get_segments, OPENAI_MODELS
 
 
-# model names in a single line are aliases for the same model
-OPENAI_MODELS = [
-    'gpt-4o', 'chatgpt-4o-latest',
-    'gpt-4o-mini',
-    'o1',
-    'o1-mini',
-    'o3-mini',
-    'gpt-4-turbo',
-]
 
 VLM_RSEPONSE_TYPES = Literal['caption', 'parsed', 'binary', 'parsed_binary']
 
 
-def get_client(
-    host: str,
-    port: int,
-    model_name: str,
-) -> openai.Client:
-    if model_name in OPENAI_MODELS:
-        print('Using OpenAI API', flush=True)
-        client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
-    else:
-        server_address = f"http://{host}:{port}"
-        print(f'Waiting for LLM server at {server_address}...', flush=True)
-        wait_for_server(server_address, timeout=600)
-        client = openai.Client(api_key="EMPTY", base_url=f"{server_address}/v1")
-    return client
+# def get_client(
+#     host: str,
+#     port: int,
+#     model_name: str,
+# ) -> openai.Client:
+#     if model_name in OPENAI_MODELS:
+#         print('Using OpenAI API', flush=True)
+#         client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
+#     else:
+#         server_address = f"http://{host}:{port}"
+#         print(f'Waiting for LLM server at {server_address}...', flush=True)
+#         wait_for_server(server_address, timeout=600)
+#         client = openai.Client(api_key="EMPTY", base_url=f"{server_address}/v1")
+#     return client
 
 
 def get_outdir(
@@ -82,36 +70,36 @@ def get_outdir(
     return p_outdir
 
 
-def get_segments(
-    p_video: str | Path,
-    segment_duration_sec: float = 1.,
-    num_segment_frames = 32,
-    segment_overlap_sec: float = 0.,
-    num_skip_first_segments: int = 0,
-):
-    FPS = 30
-    num_frames_segment = int(segment_duration_sec * FPS)
-    num_frames_overlap = int(segment_overlap_sec * FPS)
+# def get_segments(
+#     p_video: str | Path,
+#     segment_duration_sec: float = 1.,
+#     num_segment_frames = 32,
+#     segment_overlap_sec: float = 0.,
+#     num_skip_first_segments: int = 0,
+# ):
+#     FPS = 30
+#     num_frames_segment = int(segment_duration_sec * FPS)
+#     num_frames_overlap = int(segment_overlap_sec * FPS)
 
-    vr = VideoReader(str(p_video), ctx=cpu(0))
-    total_frame_num = len(vr)
-    num_segments = (total_frame_num - num_frames_segment) // (num_frames_segment - num_frames_overlap) + 1  # Discard last segment if not enough frames
-    for segment_idx in range(num_segments):
-        if num_skip_first_segments > 0 and segment_idx < num_skip_first_segments:
-            continue
-        segment_start_idx = segment_idx * (num_frames_segment - num_frames_overlap)
-        segment_end_idx = segment_start_idx + num_frames_segment - 1
-        uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, num_segment_frames + 2, dtype=int)[1:-1]
-        frame_idx = uniform_sampled_frames.tolist()
-        frames = vr.get_batch(frame_idx).asnumpy()
-        frame_dict = {
-            'frames': frames,
-            'segment_idx': segment_idx,
-            'total_segments': num_segments,
-            'segment_start_idx': segment_start_idx,
-            'segment_end_idx': segment_end_idx,
-        }
-        yield frame_dict
+#     vr = VideoReader(str(p_video), ctx=cpu(0))
+#     total_frame_num = len(vr)
+#     num_segments = (total_frame_num - num_frames_segment) // (num_frames_segment - num_frames_overlap) + 1  # Discard last segment if not enough frames
+#     for segment_idx in range(num_segments):
+#         if num_skip_first_segments > 0 and segment_idx < num_skip_first_segments:
+#             continue
+#         segment_start_idx = segment_idx * (num_frames_segment - num_frames_overlap)
+#         segment_end_idx = segment_start_idx + num_frames_segment - 1
+#         uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, num_segment_frames + 2, dtype=int)[1:-1]
+#         frame_idx = uniform_sampled_frames.tolist()
+#         frames = vr.get_batch(frame_idx).asnumpy()
+#         frame_dict = {
+#             'frames': frames,
+#             'segment_idx': segment_idx,
+#             'total_segments': num_segments,
+#             'segment_start_idx': segment_start_idx,
+#             'segment_end_idx': segment_end_idx,
+#         }
+#         yield frame_dict
 
 
 def frames_to_base64(frames) -> list[str]:
@@ -584,14 +572,19 @@ class Main:
         df_ann_test = self.df_ann_test.iloc[rank::world_size]
         is_openai_reasoning_model = 'o1' in llm_model or 'o3' in llm_model
 
-        if llm_model not in OPENAI_MODELS:
-            server_address = f"http://{host}:{port}"
-            print(f'Waiting for LLM server at {server_address}...', flush=True)
-            wait_for_server(server_address, timeout=600)
-            client = openai.Client(api_key="EMPTY", base_url=f"{server_address}/v1")
-        else:
-            print('Using OpenAI API', flush=True)
-            client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
+        client = get_client(
+            host=host,
+            port=port,
+            model_name=llm_model
+        )
+        # if llm_model not in OPENAI_MODELS:
+        #     server_address = f"http://{host}:{port}"
+        #     print(f'Waiting for LLM server at {server_address}...', flush=True)
+        #     wait_for_server(server_address, timeout=600)
+        #     client = openai.Client(api_key="EMPTY", base_url=f"{server_address}/v1")
+        # else:
+        #     print('Using OpenAI API', flush=True)
+        #     client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
 
         if prompt_type == 'ko':
             context_prompt = "다음은 비디오에 대한 설명이야. 만약 너가 경찰이라면 이 장면의 이상한 정도를 0부터 1까지의 점수 중에 어떻게 평가할 거야? 0은 일상적인 장면이고 1은 의심스러운 활동이 있는 장면이야."
