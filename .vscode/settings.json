@@ -1,10 +1,5 @@
 {
     "search.exclude": {
         "logs/": true
-    },
-    "python.analysis.exclude": [
-        "data/",
-        "output/",
-        "logs/"
-    ]
+    }
 }

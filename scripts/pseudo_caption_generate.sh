@@ -20,7 +20,7 @@ load_llm_server() {
                 --chat-template="$chat_template" \
                 --host='0.0.0.0' \
                 --disable-overlap-schedule --router-policy round_robin \
-                --mem-fraction-static 0.8 --random-seed 1234 --enable-metrics && docker logs -f llm_server
+                --mem-fraction-static 0.7 --random-seed 1234 --enable-metrics && docker logs -f llm_server
 }
 
 run_worker() {
@@ -69,7 +69,6 @@ llm_model='meta-llama/Llama-3.3-70B-Instruct'
 tp_size=8
 load_llm_server $tp_size $llm_model
 run_worker $tp_size $llm_model
-
 
 ###############################################################
 

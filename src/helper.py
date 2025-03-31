@@ -11,13 +11,11 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     from torchvision import transforms
     from torchvision.transforms._transforms_video import NormalizeVideo, CenterCropVideo
-from pytorchvideo import transforms as pv_transforms
+# from pytorchvideo import transforms as pv_transforms
 
 import decord
 from decord import VideoReader, cpu
 decord.bridge.reset_bridge()
-
-import openai
 
 
 # model names in a single line are aliases for the same model
@@ -54,7 +52,8 @@ def get_client(
     host: str,
     port: int,
     model_name: str,
-) -> openai.Client:
+):
+    import openai
     if model_name in OPENAI_MODELS:
         print('Using OpenAI API', flush=True)
         client = openai.Client(api_key=os.environ.get('OPENAI_API_KEY'))
@@ -159,6 +158,7 @@ class SegmentDataset(torch.utils.data.Dataset):
         assert len(self.segment_infos) == self.num_total_segments, f'{len(self.segment_infos)=} != {self.num_total_segments=}'
         self.segment_infos = self.segment_infos[self.rank::self.world_size]
 
+        from pytorchvideo import transforms as pv_transforms
         self.video_transform = transforms.Compose(
             [
                 pv_transforms.ShortSideScale(256),
@@ -179,8 +179,9 @@ class SegmentDataset(torch.utils.data.Dataset):
         p_video = segment_info['p_video']
         segment_start_idx = segment_info['segment_start_idx']
         segment_end_idx = segment_info['segment_end_idx']
-        num_segment_frames = int(self.segment_duration_sec * FPS)
-        uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, num_segment_frames + 2, dtype=int)[1:-1]
+        # num_segment_frames = int(self.segment_duration_sec * FPS)
+        # uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, num_segment_frames + 2, dtype=int)[1:-1]
+        uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, self.num_sampled_segment_frames + 2, dtype=int)[1:-1]
         frame_idxs = uniform_sampled_frames.tolist()
         frames = VideoReader(str(p_video), ctx=cpu(0)).get_batch(frame_idxs).asnumpy()
         frames = torch.tensor(frames).permute(3, 0, 1, 2).float()  # [T, H, W, C] -> [C, T, H, W]

@@ -11,7 +11,7 @@ RUN groupadd -g ${GID} ${USERNAME} && \
 
 # ----------------------------------------------------------------------
 
-FROM pytorch/pytorch:1.13.0-cuda11.6-cudnn8-runtime
+FROM pytorch/pytorch:1.13.1-cuda11.6-cudnn8-runtime
 ARG USERNAME=hglee
 
 # Copy only the minimal needed configuration or files.
@@ -28,7 +28,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y \
         vim git zsh htop iftop tmux unzip zip curl wget tree ncdu \
-        tzdata bzip2 build-essential net-tools iputils-ping locales && \
+        tzdata bzip2 build-essential net-tools iputils-ping locales \
+        libgl1-mesa-glx libglib2.0-0 && \
     ln -fs /usr/share/zoneinfo/$TZ /etc/localtime && \
     dpkg-reconfigure --frontend noninteractive tzdata && \
     rm -rf /var/lib/apt/lists/* && \
@@ -45,7 +46,6 @@ RUN git clone https://github.com/facebookresearch/ImageBind.git /imagebind && rm
 COPY libs/imagebind/requirements.txt /imagebind
 RUN cd /imagebind && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu116 .
 RUN rm -rf /imagebind
-RUN python -c "import imagebind; print(imagebind.__file__)"
 
 # ----------------------------------------------------------------------
 
