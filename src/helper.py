@@ -179,8 +179,6 @@ class SegmentDataset(torch.utils.data.Dataset):
         p_video = segment_info['p_video']
         segment_start_idx = segment_info['segment_start_idx']
         segment_end_idx = segment_info['segment_end_idx']
-        # num_segment_frames = int(self.segment_duration_sec * FPS)
-        # uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, num_segment_frames + 2, dtype=int)[1:-1]
         uniform_sampled_frames = np.linspace(segment_start_idx, segment_end_idx, self.num_sampled_segment_frames + 2, dtype=int)[1:-1]
         frame_idxs = uniform_sampled_frames.tolist()
         frames = VideoReader(str(p_video), ctx=cpu(0)).get_batch(frame_idxs).asnumpy()
