@@ -35,7 +35,7 @@ anomalous_scale=1.0
 ####################################################################################
 
 
-world_size=$(nvidia-smi -L | wc -l)
+world_size=$(nvidia-smi -L | wc -l) &&\
 for rank in $(seq 0 $(( world_size - 1 ))); do
     docker run \
         --rm -d --gpus all --shm-size=32G \
@@ -52,7 +52,24 @@ for rank in $(seq 0 $(( world_size - 1 ))); do
                 --num_sampled_segment_frames $num_sampled_segment_frames
 done && docker logs -f extract0
 
-for rank in {0..3}; do
+
+world_size=$(nvidia-smi -L | wc -l) &&\
+for rank in $(seq 0 $(( world_size - 1 ))); do
+    docker run \
+        --rm -d --gpus all --shm-size=32G \
+        --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
+        --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
+        --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+        --name "extcap${rank:-0}" \
+        'imagebind' \
+            python src/pseudo_caption_infer.py extract_caption_embeddings \
+                --rank ${rank:-0} --world_size ${world_size:-1} \
+                --retriever_name $retriever_name
+done && docker logs -f extcap0
+
+
+world_size=8 &&\
+for rank in $(seq 0 $(( world_size - 1 ))); do
     docker run \
         --rm -d --gpus all --shm-size=32G \
         --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
@@ -61,7 +78,7 @@ for rank in {0..3}; do
         --name "match$rank" \
         'imagebind' \
             python src/pseudo_caption_infer.py match_captions_per_segment \
-                --rank ${rank:-0} --world_size 4 \
+                --rank ${rank:-0} --world_size ${world_size:-1} \
                 --retriever_name $retriever_name \
                 --segment_duration_sec $segment_duration_sec \
                 --segment_overlap_sec $segment_overlap_sec \

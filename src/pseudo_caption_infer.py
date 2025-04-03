@@ -1,12 +1,10 @@
 import os
 import sys
-import warnings
 sys.path.append('/code/src')
 from helper import get_segments, df_ann_test, sr_num_frames_test, SegmentDataset
 
 import time
 import json
-import textwrap
 from pathlib import Path
 from tqdm import trange, tqdm
 
@@ -14,9 +12,9 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.utils.data
-from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.metrics import roc_auc_score
 
-import faiss
+# import faiss
 import decord
 decord.bridge.reset_bridge()
 
@@ -31,158 +29,140 @@ sys.path = ['/code/libs/languagebind'] + sys.path
 from languagebind import LanguageBindVideo, LanguageBindVideoTokenizer
 
 
-@torch.inference_mode()
-def forward_video(model, frames):
-    if frames.ndim == 4:
-        frames = frames.unsqueeze(0)
-
-    if type(model) == ImageBindModel:
-        frames = rearrange(frames, 'b c (t s) h w -> b s c t h w', t=2)  # T=2 fixed as ImageBind expects 2 frames per clip
-        return model.forward({ModalityType.VISION: frames})[ModalityType.VISION]
-
-    elif type(model) == LanguageBindVideo:
-        t = 8  # LanguageBind expects 8 frames per clip
-        s = frames.shape[2] // t
-        frames = rearrange(frames, 'b c (t s) h w -> (b s) c t h w', t=t)
-        vision_outputs = model.vision_model.forward(pixel_values=frames)
-        image_embeds = vision_outputs[1]  # [B x S, D_inter]
-        image_embeds = model.visual_projection.forward(image_embeds)  # [B x S, D_out]
-        image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
-        image_embeds = reduce(image_embeds, '(b s) d -> b d', 'mean', s=s)
-        return image_embeds  # [B, D_out]
+def load_retriever_model(
+    retriever_name='imagebind',
+    device='cuda',
+):
+    print(f"Loading {retriever_name}...", flush=True)
+    tokenizer = None
+    if retriever_name == 'imagebind':
+        os.chdir('/code/libs/imagebind')  # tokenizer path is hardcoded in imagebind
+        model = ImageBindModel.from_pretrained("nielsr/imagebind-huge")
+    elif retriever_name == 'languagebind':
+        pretrained_ckpt = 'LanguageBind/LanguageBind_Video_Huge_V1.5_FT'
+        model = LanguageBindVideo.from_pretrained(pretrained_ckpt)
+        tokenizer = LanguageBindVideoTokenizer.from_pretrained(pretrained_ckpt)
+    model.eval()
+    model.to(device)
+    print(f"Loaded {retriever_name}", flush=True)
+    return model, tokenizer
 
 
-@torch.inference_mode()
-def forward_text(model, texts, tokenizer=None):
-    device = next(model.parameters()).device
-    if type(model) == ImageBindModel:
-        text_tokens = data.load_and_transform_text(texts, device)
-        return model.forward({ModalityType.TEXT: text_tokens})[ModalityType.TEXT]
-
-    elif type(model) == LanguageBindVideo:
-        assert tokenizer is not None
-        encoding = tokenizer(
-            texts,
-            max_length=77, padding='max_length',
-            truncation=True, return_tensors='pt'
-        )
-        for k, v in encoding.items():
-            if isinstance(v, torch.Tensor):
-                encoding[k] = v.to(device)
-        text_outputs = model.text_model.forward(**encoding)
-        text_embeds = text_outputs[1]
-        text_embeds = model.text_projection.forward(text_embeds)
-        text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
-        return text_embeds
+def load_captions(p_captions_dir):
+    print("Loading captions...")
+    texts_normal, texts_anomalous, categories_anomalous = [], [], []
+    for p_json in p_captions_dir.glob("*.json"):
+        with p_json.open("r") as f:
+            captions = json.load(f)
+            for caption_set in captions['descriptions']:
+                texts_normal.append(caption_set['normal']['description'])
+                texts_anomalous.append(caption_set['anomalous']['description'])
+                categories_anomalous.append(caption_set['anomalous']['category'])
+    print(f'Loaded {len(texts_normal)} normal captions and {len(texts_anomalous)} anomalous captions')
+    return texts_normal, texts_anomalous, categories_anomalous
 
 
-class Main:
-    def __init__(self):
-        ### dataset paths
+# def create_caption_index(
+#     embs_normal,
+#     embs_anomalous,
+#     anomalous_scale=1.,
+#     rank=0
+# ) -> faiss.Index:
+#     print("Creating or loading Faiss index...")
+#     d = embs_normal.shape[1]
+#     num_normal = embs_normal.shape[0]
+#     num_anomalous = embs_anomalous.shape[0]
+
+#     print(f'[Rank {rank}] Creating Faiss index...')
+#     index = faiss.IndexFlatIP(d)
+#     index = faiss.IndexIDMap2(index)
+#     index.add_with_ids(embs_normal, np.arange(num_normal))
+#     index.add_with_ids(embs_anomalous * anomalous_scale, np.arange(num_normal, num_normal + num_anomalous))
+
+#     print(f"Loaded Faiss index {index}")
+#     return index
+
+
+class Inner:
+    def __init__(
+        self,
+        retriever_name: str = 'imagebind',
+        rank: int = 0,
+        world_size: int = 1,
+    ):
+        self.retriever_name = retriever_name
+        self.device = f'cuda:{rank % 8}'
+        self.rank = rank
+        self.world_size = world_size
+
+        # dataset paths
         self.p_dataroot = Path('/datasets/UCF_Crimes')
         self.p_annroot = Path('/code/data/annotations')
         self.p_videos_root = self.p_dataroot / 'Videos'
 
         # caption paths
         self.p_captions_root = Path("/code/output/psuedo-captions/gpt-4o/00-rich-context")
+        # self.p_captions_root = Path("/code/output/psuedo-captions/gpt-4o/01-rich-context-1M")
         self.p_captions_dir = self.p_captions_root / "captions"
         assert self.p_captions_dir.exists(), f"Captions directory {self.p_captions_dir} does not exist"
 
-    def _init_output_paths(self, retriever_name: str = 'imagebind'):
+        # output paths
         self.p_outdir_embeddings = self.p_captions_root / f"embeddings/{retriever_name}"
-        self.p_normal = self.p_outdir_embeddings / "embs_normal.npy"
-        self.p_anomalous = self.p_outdir_embeddings / "embs_anomalous.npy"
+        self.p_normal = self.p_outdir_embeddings / "embs_normal.pt"
+        self.p_anomalous = self.p_outdir_embeddings / "embs_anomalous.pt"
         self.p_outdir_scored = self.p_captions_root / "scored"
 
-    def _load_captions(self):
-        print("Loading captions...")
-        texts_normal, texts_anomalous = [], []
-        for p_json in self.p_captions_dir.glob("*.json"):
-            with p_json.open("r") as f:
-                captions = json.load(f)
-                for caption_set in captions['descriptions']:
-                    texts_normal.append(caption_set['normal']['description'])
-                    texts_anomalous.append(caption_set['anomalous']['description'])
-        print(f'Loaded {len(texts_normal)} normal captions and {len(texts_anomalous)} anomalous captions')
-        return texts_normal, texts_anomalous
+        self.model, self.tokenizer = None, None
 
-    def _load_retriever_model(self, retriever_name: str = 'imagebind', device: str = 'cuda'):
-        print(f"Loading {retriever_name}...", flush=True)
-        tokenizer = None
-        if retriever_name == 'imagebind':
-            os.chdir('/code/libs/imagebind')  # tokenizer path is hardcoded in imagebind
-            model = ImageBindModel.from_pretrained("nielsr/imagebind-huge")
-        elif retriever_name == 'languagebind':
-            pretrained_ckpt = 'LanguageBind/LanguageBind_Video_Huge_V1.5_FT'
-            model = LanguageBindVideo.from_pretrained(pretrained_ckpt)
-            tokenizer = LanguageBindVideoTokenizer.from_pretrained(pretrained_ckpt)
-        model.eval()
-        model.to(device)
-        print(f"Loaded {retriever_name}", flush=True)
-        return model, tokenizer
+    @torch.inference_mode()
+    def forward_video(self, frames):
+        if frames.ndim == 4:
+            frames = frames.unsqueeze(0)
 
-    def _create_or_load_caption_embeddings(self, model=None, tokenizer=None, rank=0):
-        tqdm.write("Creating or loading embeddings...")
-        num_normal = len(self.texts_normal)
-        num_anomalous = len(self.texts_anomalous)
-        stride = 2048
+        if self.retriever_name == 'imagebind':
+            frames = rearrange(frames, 'b c (t s) h w -> b s c t h w', t=2)  # T=2 fixed as ImageBind expects 2 frames per clip
+            image_embeds = self.model.forward({ModalityType.VISION: frames})[ModalityType.VISION]
 
-        if rank == 0 and not self.p_normal.exists():
-            tqdm.write(f'[Rank {rank}] Creating embeddings for normal captions...')
-            # texts = [f'Normal: {text}' for text in self.texts_normal]
-            texts = self.texts_normal
-            embs_normal = []
-            for i in trange(0, num_normal, stride, desc="Normal"):
-                emb_normal = forward_text(model, texts[i:i+stride], tokenizer=tokenizer)
-                embs_normal.append(emb_normal.cpu().numpy())
-            embs_normal = np.concatenate(embs_normal, axis=0)
-            np.save(self.p_normal, embs_normal)
-        else:
-            while not self.p_normal.exists():
-                tqdm.write(f'[Rank {rank}] Waiting for rank 0 to finish creating embeddings...')
-                time.sleep(5)
-            tqdm.write(f'[Rank {rank}] Loading embeddings...')
-            embs_normal = np.load(self.p_normal)
+        elif self.retriever_name == 'languagebind':
+            t = 8  # LanguageBind expects 8 frames per clip
+            s = frames.shape[2] // t
+            frames = rearrange(frames, 'b c (t s) h w -> (b s) c t h w', t=t)
+            vision_outputs = self.model.vision_model.forward(pixel_values=frames)
+            image_embeds = vision_outputs[1]  # [B x S, D_inter]
+            image_embeds = self.model.visual_projection.forward(image_embeds)  # [B x S, D_out]
+            image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
+            image_embeds = reduce(image_embeds, '(b s) d -> b d', 'mean', s=s)
 
-        if rank == 0 and not self.p_anomalous.exists():
-            tqdm.write(f'[Rank {rank}] Creating embeddings for anomalous captions ...')
-            # texts = [f'Anomaly: {text}' for text in self.texts_anomalous]
-            texts = self.texts_anomalous
-            embs_anomalous = []
-            for i in trange(0, num_anomalous, stride, desc="Anomalous"):
-                emb_anomalous = forward_text(model, texts[i:i+stride], tokenizer=tokenizer)
-                embs_anomalous.append(emb_anomalous.cpu().numpy())
-            embs_anomalous = np.concatenate(embs_anomalous, axis=0)
-            np.save(self.p_anomalous, embs_anomalous)
-        else:
-            while not self.p_anomalous.exists():
-                tqdm.write(f'[Rank {rank}] Waiting for rank 0 to finish creating embeddings...')
-                time.sleep(5)
-            tqdm.write(f'[Rank {rank}] Loading embeddings...')
-            embs_anomalous = np.load(self.p_anomalous)
+        return image_embeds  # [B, D_out]
 
-        return embs_normal, embs_anomalous
+    def tokenize_text(self, texts):
+        if self.retriever_name == 'imagebind':
+            encoding = data.load_and_transform_text(texts, device=self.device)
 
-    def _create_caption_index(
-        self,
-        embs_normal,
-        embs_anomalous,
-        anomalous_scale=1.,
-        rank=0
-    ) -> faiss.Index:
-        print("Creating or loading Faiss index...")
-        d = embs_normal.shape[1]
-        num_normal = len(self.texts_normal)
-        num_anomalous = len(self.texts_anomalous)
+        elif self.retriever_name == 'languagebind':
+            encoding = self.tokenizer(
+                texts,
+                max_length=77, padding='max_length',
+                truncation=True, return_tensors='pt'
+            )
+            for k, v in encoding.items():
+                if isinstance(v, torch.Tensor):
+                    encoding[k] = v.to(self.device)
 
-        print(f'[Rank {rank}] Creating Faiss index...')
-        index = faiss.IndexFlatIP(d)
-        index = faiss.IndexIDMap2(index)
-        index.add_with_ids(embs_normal, np.arange(num_normal))
-        index.add_with_ids(embs_anomalous * anomalous_scale, np.arange(num_normal, num_normal + num_anomalous))
+        return encoding
 
-        print(f"Loaded Faiss index {index}")
-        return index
+    @torch.inference_mode()
+    def forward_text(self, encoding):
+        if self.retriever_name == 'imagebind':
+            text_embeds = self.model.forward({ModalityType.TEXT: encoding})[ModalityType.TEXT]
+
+        elif self.retriever_name == 'languagebind':
+            text_outputs = self.model.text_model.forward(**encoding)
+            text_embeds = text_outputs[1]
+            text_embeds = self.model.text_projection.forward(text_embeds)
+            text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
+
+        return text_embeds
 
     def extract_embeddings_per_segment(
         self,
@@ -198,7 +178,7 @@ class Main:
         p_outdir_segment_embeddings_with_options.mkdir(exist_ok=True, parents=True)
         print('Outdir:', p_outdir_segment_embeddings_with_options, flush=True)
 
-        model, tokenizer = self._load_retriever_model(retriever_name, device)
+        self.model, _ = load_retriever_model(retriever_name, device)
 
         ds = SegmentDataset(
             p_videos_dir=self.p_videos_root,
@@ -235,10 +215,100 @@ class Main:
             p_out_embedding.parent.mkdir(exist_ok=True, parents=True)
             frames = segment_data[0]['frames'].to(device)
 
-            emb_segment = forward_video(model, frames[None])[0]
+            emb_segment = self.forward_video(frames[None])[0]
             emb_segment = emb_segment.cpu().numpy()
             np.save(p_out_embedding, emb_segment)
 
+    @torch.inference_mode()
+    def extract_caption_embeddings(
+        self,
+        rank: int = 0, world_size: int = 1,
+        retriever_name: str = 'imagebind',
+    ):
+        def get_p_rank(p, r):
+            return p.with_name(p.stem + f'_{r}.{p.suffix}')
+
+        def extract(texts):
+            embs = []
+            for i in trange(0, len(texts), stride):
+                texts_batch = texts[i:i+stride]
+                text_tokens = self.tokenize_text(texts_batch)
+                emb = self.forward_text(text_tokens)
+                embs.append(emb.cpu())
+            embs = torch.cat(embs, dim=0)
+            return embs
+
+        def gather_and_save_embeddings(p_out, r):
+            if r == 0:
+                output = {
+                    'texts': [],
+                    'embeddings': [],
+                }
+                for rr in range(world_size):
+                    p = get_p_rank(p_out, rr)
+                    while not p.exists():
+                        tqdm.write(f"Waiting for rank {rr} to finish saving embeddings...")
+                        time.sleep(5)
+                    output_rank = torch.load(p)
+                    output['texts'].extend(output_rank['texts'])
+                    output['embeddings'].append(output_rank['embeddings'])
+                output['embeddings'] = torch.cat(output['embeddings'], dim=0)
+                torch.save(output, p_out)
+
+            while not p_out.exists():
+                tqdm.write(f"Waiting for rank 0 to finish saving embeddings...")
+                time.sleep(5)
+
+        # load captions and model
+        stride = 2048
+        texts_normal, texts_anomalous, categories_anomalous = load_captions(self.p_captions_dir)
+        self.model, self.tokenizer = load_retriever_model(retriever_name, self.device)
+
+        # distribute the workload
+        texts_normal_subset = texts_normal[rank::world_size]
+        texts_anomalous_subset = texts_anomalous[rank::world_size]
+        categories_anomalous_subset = categories_anomalous[rank::world_size]
+        num_normal = len(texts_normal_subset)
+        num_anomalous = len(texts_anomalous_subset)
+        msg = f"Extracting {num_normal} normal and {num_anomalous} anomalous captions..."
+        if world_size > 1:
+            msg += f" (rank {rank} of {world_size})"
+        tqdm.write(msg)
+
+        # prompting
+        texts_normal_subset = [
+            f'Normal: {text}'
+            for text in texts_normal_subset
+        ]
+        texts_anomalous_subset = [
+            f'Anomalous: {text}'
+            for text, category in zip(texts_anomalous_subset, categories_anomalous_subset)
+        ]
+
+        # create output directories
+        self.p_outdir_embeddings.mkdir(exist_ok=True, parents=True)
+        self.p_normal.unlink(missing_ok=True)
+        self.p_anomalous.unlink(missing_ok=True)
+        p_normal_rank = get_p_rank(self.p_normal, rank)
+        p_anomalous_rank = get_p_rank(self.p_anomalous, rank)
+        p_normal_rank.unlink(missing_ok=True)
+        p_anomalous_rank.unlink(missing_ok=True)
+
+        for texts, p_rank, p in zip(
+            [texts_normal_subset, texts_anomalous_subset],
+            [p_normal_rank, p_anomalous_rank],
+            [self.p_normal, self.p_anomalous],
+        ):
+            output_rank = {
+                'texts': texts,
+                'embeddings': extract(texts),
+            }
+            torch.save(output_rank, p_rank)
+            gather_and_save_embeddings(p, rank)
+            p_rank.unlink(missing_ok=True)
+            tqdm.write(f"Rank {rank} finished saving captions to {p}")
+
+    @torch.inference_mode()
     def match_captions_per_segment(
         self,
         rank: int = 0, world_size: int = 1,
@@ -249,24 +319,29 @@ class Main:
         anomalous_scale: float = 1.,
         retriever_name: str = 'imagebind',
     ):
-        self._init_output_paths(retriever_name)
         assert self.p_outdir_embeddings.exists(), f"Embeddings directory {self.p_outdir_embeddings} does not exist"
         self.p_outdir_scored.mkdir(exist_ok=True, parents=True)
 
-        if self.p_normal.exists() and self.p_anomalous.exists():
-            model, tokenizer = None, None
-        else:
-            model, tokenizer = self._load_retriever_model(retriever_name)
+        if not self.p_normal.exists() or not self.p_anomalous.exists():
+            self.model, self.tokenizer = load_retriever_model(retriever_name, self.device)
 
         num_segment_frames = int(segment_duration_sec * 30)
         num_overlap_frames = int(segment_overlap_sec * 30)
-        self.texts_normal, self.texts_anomalous = self._load_captions()
-        embs_normal, embs_anomalous = self._create_or_load_caption_embeddings(
-            model=model, tokenizer=tokenizer, rank=rank)
-        index = self._create_caption_index(
-            embs_normal, embs_anomalous,
-            anomalous_scale=anomalous_scale, rank=rank
-        )
+        texts_normal, texts_anomalous, categories_anomalous = load_captions(self.p_captions_dir)
+        # embs_normal = torch.load(self.p_normal)['embeddings'].numpy()
+        # embs_anomalous = torch.load(self.p_anomalous)['embeddings'].numpy()
+        # index = create_caption_index(
+        #     embs_normal, embs_anomalous,
+        #     anomalous_scale=anomalous_scale, rank=rank
+        # )
+        normals = torch.load(self.p_normal)
+        anomalouses = torch.load(self.p_anomalous)
+        embs_normal = normals['embeddings']
+        embs_anomalous = anomalouses['embeddings'] * anomalous_scale
+        embs = torch.cat([embs_normal, embs_anomalous], dim=0).numpy()
+        texts_normal = normals['texts']
+        texts_anomalous = anomalouses['texts']
+        texts = texts_normal + texts_anomalous
 
         # project embeddings for calibration
         # emb_normal_mean = embs_normal.mean(axis=0)
@@ -276,8 +351,6 @@ class Main:
         # emb_proj = emb_anomalous_mean - emb_normal_mean
         # emb_proj /= np.linalg.norm(emb_proj)
         # emb_proj = emb_proj.astype(np.float32)
-
-        texts = self.texts_normal + self.texts_anomalous
 
         p_segment_embeddings_with_options = self.p_outdir_embeddings / f"dur={segment_duration_sec:.1f}_ol={segment_overlap_sec:.1f}_fs={num_sampled_segment_frames}" / 'segments'
         p_segment_embeddings_with_options.mkdir(exist_ok=True, parents=True)
@@ -298,14 +371,18 @@ class Main:
                 segment_embeddings.append(np.load(p_segment))
             segment_embeddings = np.stack(segment_embeddings, axis=0)
 
-            # calibrate embeddings by rotating the segment vector onto the space having the same distance to the normal and anomalous mean
+            # calibrate embeddings
             # norms = np.linalg.norm(segment_embeddings, axis=-1, keepdims=True)
             # segment_embeddings -= np.einsum('i,j,hj->hi', emb_proj, emb_proj, segment_embeddings)
             # segment_embeddings *= norms / np.linalg.norm(segment_embeddings, axis=-1, keepdims=True)
 
-            dot_products, indices = index.search(segment_embeddings, num_captions_per_segment)
+            # dot_products, indices = index.search(segment_embeddings, num_captions_per_segment)
+            dot_products = np.dot(segment_embeddings, embs.T)
+            indices = np.argsort(-dot_products, axis=-1)[:, :num_captions_per_segment]
+            dot_products = np.take_along_axis(dot_products, indices, axis=-1)
+
             selected_texts = np.take(texts, indices)
-            is_anomalous = indices > len(self.texts_normal)
+            is_anomalous = indices > len(texts_normal)
             pbar.set_postfix_str(f'{is_anomalous.mean():.6f}')
 
             segment_records = []
@@ -345,7 +422,6 @@ class Main:
         retriever_name: str = 'imagebind',
         force: bool = False,
     ):
-        self._init_output_paths(retriever_name)
         assert self.p_outdir_scored.exists(), f"Scored directory {self.p_outdir_scored} does not exist"
 
         ann_vad = {}
@@ -385,6 +461,75 @@ class Main:
             all_labels = np.concatenate([all_labels, bin_label])
         auc = roc_auc_score(all_labels.astype(int), all_preds)
         print(auc)
+
+
+class Main:
+    def __init__(self):
+        pass
+
+    def extract_embeddings_per_segment(
+        self,
+        rank: int = 0, world_size: int = 1,
+        segment_duration_sec: float = 1.,
+        segment_overlap_sec: float = .5,
+        num_sampled_segment_frames: int = 16,
+        retriever_name: str = 'imagebind',
+    ):
+        inner = Inner(retriever_name, rank, world_size)
+        inner.extract_embeddings_per_segment(
+            rank=rank, world_size=world_size,
+            segment_duration_sec=segment_duration_sec,
+            segment_overlap_sec=segment_overlap_sec,
+            num_sampled_segment_frames=num_sampled_segment_frames,
+            retriever_name=retriever_name,
+        )
+
+    def extract_caption_embeddings(
+        self,
+        rank: int = 0, world_size: int = 1,
+        retriever_name: str = 'imagebind',
+    ):
+        inner = Inner(retriever_name, rank, world_size)
+        inner.extract_caption_embeddings(
+            rank=rank, world_size=world_size,
+            retriever_name=retriever_name,
+        )
+
+    def match_captions_per_segment(
+        self,
+        rank: int = 0, world_size: int = 1,
+        segment_duration_sec: float = 1.,
+        segment_overlap_sec: float = .5,
+        num_sampled_segment_frames: int = 16,
+        num_captions_per_segment: int = 10,
+        anomalous_scale: float = 1.,
+        retriever_name: str = 'imagebind',
+    ):
+        inner = Inner(retriever_name, rank, world_size)
+        inner.match_captions_per_segment(
+            rank=rank, world_size=world_size,
+            segment_duration_sec=segment_duration_sec,
+            segment_overlap_sec=segment_overlap_sec,
+            num_sampled_segment_frames=num_sampled_segment_frames,
+            num_captions_per_segment=num_captions_per_segment,
+            anomalous_scale=anomalous_scale,
+            retriever_name=retriever_name,
+        )
+        inner.evaluate(
+            retriever_name=retriever_name,
+            force=False,
+        )
+
+    def evaluate(
+        self,
+        retriever_name: str = 'imagebind',
+        force: bool = False,
+    ):
+        inner = Inner(retriever_name)
+        inner.evaluate(
+            retriever_name=retriever_name,
+            force=force,
+        )
 
 
 if __name__ == '__main__':
