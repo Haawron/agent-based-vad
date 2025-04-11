@@ -852,10 +852,11 @@ class BertLMPredictionHead(nn.Module):
         # an output-only bias for each token.
         self.decoder = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        self.bias = nn.Parameter(torch.zeros(config.vocab_size))
+        # self.bias = nn.Parameter(torch.zeros(config.vocab_size))
+        # self.bias = self.decoder.bias
 
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
-        self.decoder.bias = self.bias
+        # self.decoder.bias = self.bias
 
     def forward(self, hidden_states):
         hidden_states = self.transform(hidden_states)
@@ -2166,5 +2167,3 @@ class BertForQuestionAnswering(BertPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-
-

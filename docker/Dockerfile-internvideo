@@ -1,0 +1,59 @@
+# DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile-internvideo -t internvideo --build-arg UID=$(id -u) --build-arg GID=$(id -g) .
+
+FROM ubuntu:22.04 AS base
+
+ARG UID
+ARG GID
+ARG USERNAME=hglee
+
+RUN groupadd -g ${GID} ${USERNAME} && \
+    useradd -m -u ${UID} -g ${USERNAME} ${USERNAME}
+
+# ----------------------------------------------------------------------
+
+# python 3.10
+FROM pytorch/pytorch:2.4.1-cuda11.8-cudnn9-devel
+ARG USERNAME=hglee
+
+# Copy only the minimal needed configuration or files.
+COPY --from=base /etc/passwd /etc/passwd
+COPY --from=base /etc/group /etc/group
+RUN mkdir -p /home/${USERNAME} && chown ${USERNAME}:${USERNAME} /home/${USERNAME}
+# Add user to sudo group
+RUN usermod -aG sudo ${USERNAME}
+
+RUN sed -i 's@archive.ubuntu.com@mirror.kakao.com@g' /etc/apt/sources.list
+
+ENV TZ=Asia/Seoul
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y \
+        vim git zsh htop iftop tmux unzip zip curl wget tree ncdu \
+        tzdata bzip2 build-essential net-tools iputils-ping locales \
+        libgl1-mesa-glx libglib2.0-0 && \
+    ln -fs /usr/share/zoneinfo/$TZ /etc/localtime && \
+    dpkg-reconfigure --frontend noninteractive tzdata && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
+
+RUN locale-gen en_US.UTF-8 && \
+    locale-gen ko_KR.UTF-8 && \
+    update-locale LANG=en_US.UTF-8
+
+
+# Install python packages
+RUN git clone https://github.com/OpenGVLab/InternVideo.git /internvideo
+RUN cd /internvideo/InternVideo2/multi_modality && MAX_JOBS=64 pip install .
+RUN MAX_JOBS=64 pip install dropout_layer_norm@git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/layer_norm
+RUN MAX_JOBS=64 TORCH_CUDA_ARCH_LIST='8.6' pip install fused_dense_lib@git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/fused_dense_lib/
+RUN pip install jupyter ipykernel
+RUN rm -rf /internvideo
+
+# ----------------------------------------------------------------------
+
+# RUN chsh -s /usr/bin/zsh ${USERNAME}
+USER ${USERNAME}
+
+WORKDIR /code
+
+CMD ["bash"]

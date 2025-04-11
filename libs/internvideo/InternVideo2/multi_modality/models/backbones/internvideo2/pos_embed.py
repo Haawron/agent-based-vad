@@ -138,7 +138,7 @@ def interpolate_pos_embed(checkpoint_model, model, orig_t_size=4, pos_name='visi
     if pos_name in checkpoint_model:
         pos_embed_checkpoint = checkpoint_model[pos_name]
         embedding_size = pos_embed_checkpoint.shape[-1] # channel dim
-        num_patches = model.patch_embed.num_patches # 
+        num_patches = model.patch_embed.num_patches #
         num_extra_tokens = model.pos_embed.shape[-2] - num_patches # 0/1
 
         # we use 4 frames for pretraining
@@ -147,7 +147,7 @@ def interpolate_pos_embed(checkpoint_model, model, orig_t_size=4, pos_name='visi
         orig_size = int(((pos_embed_checkpoint.shape[-2] - num_extra_tokens)//(orig_t_size)) ** 0.5)
         # height (== width) for the new position embedding
         new_size = int((num_patches // (new_t_size))** 0.5)
-        
+
         # class_token and dist_token are kept unchanged
         if orig_t_size != new_t_size:
             logger.info(f"Temporal interpolate from {orig_t_size} to {new_t_size} ({pos_name})")
@@ -176,7 +176,7 @@ def interpolate_pos_embed(checkpoint_model, model, orig_t_size=4, pos_name='visi
             pos_tokens = torch.nn.functional.interpolate(
                 pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
             # BT, C, H, W -> BT, H, W, C ->  B, T, H, W, C
-            pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(-1, new_t_size, new_size, new_size, embedding_size) 
+            pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(-1, new_t_size, new_size, new_size, embedding_size)
             pos_tokens = pos_tokens.flatten(1, 3) # B, L, C
             new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
             checkpoint_model[pos_name] = new_pos_embed
@@ -188,7 +188,7 @@ def interpolate_pos_embed_internvideo2(checkpoint_model, model, orig_t_size = 8)
         if pos_name in checkpoint_model:
             pos_embed_checkpoint = checkpoint_model[pos_name]
             embedding_size = pos_embed_checkpoint.shape[-1] # channel dim
-            num_patches = model.patch_embed.num_patches # 
+            num_patches = model.patch_embed.num_patches #
             num_extra_tokens = model.pos_embed.shape[-2] - num_patches # 0/1
 
             # we use 8 frames for pretraining
@@ -198,7 +198,9 @@ def interpolate_pos_embed_internvideo2(checkpoint_model, model, orig_t_size = 8)
             orig_size = int(((pos_embed_checkpoint.shape[-2] - num_extra_tokens)//(orig_t_size)) ** 0.5)
             # height (== width) for the new position embedding
             new_size = int((num_patches // (new_t_size))** 0.5)
-            
+            # print(f"orig_size: {orig_size}, new_size: {new_size}, orig_t_size: {orig_t_size}, new_t_size: {new_t_size}")
+            # print(f'Checkpoint pos_embed shape: {pos_embed_checkpoint.shape}, model pos_embed shape: {model.pos_embed.shape}')
+
             # class_token and dist_token are kept unchanged
             if orig_t_size != new_t_size:
                 logger.info(f"Temporal interpolate from {orig_t_size} to {new_t_size} ({pos_name})")
@@ -227,11 +229,11 @@ def interpolate_pos_embed_internvideo2(checkpoint_model, model, orig_t_size = 8)
                 pos_tokens = torch.nn.functional.interpolate(
                     pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
                 # BT, C, H, W -> BT, H, W, C ->  B, T, H, W, C
-                pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(-1, new_t_size, new_size, new_size, embedding_size) 
+                pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(-1, new_t_size, new_size, new_size, embedding_size)
                 pos_tokens = pos_tokens.flatten(1, 3) # B, L, C
                 new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
                 checkpoint_model[pos_name] = new_pos_embed
-    
+
     if 'pos_embed_spatial' in checkpoint_model or 'pos_embed_temporal' in checkpoint_model:
         raise NotImplementedError
 
@@ -241,20 +243,20 @@ def interpolate_pos_embed_internvideo2_new(checkpoint_model, model, orig_t_size 
     for k in checkpoint_model.keys():
         if ('pos_embed' in k or 'clip_pos_embed' in k) and 'img_pos_embed' not in k:
             pos_names.append(k)
-    
+
     logger.info(f"pos names list for interpolating: {pos_names}")
 
     assert len(pos_names) > 0, checkpoint_model.keys()
 
     if 'pos_embed_spatial' in checkpoint_model.keys() or 'pos_embed_temporal' in checkpoint_model.keys():
         raise NotImplementedError
-    
+
     # interpolate position embedding
     for pos_name in pos_names:
 
         pos_embed_checkpoint = checkpoint_model[pos_name]
         embedding_size = pos_embed_checkpoint.shape[-1] # channel dim
-        num_patches = model.patch_embed.num_patches # 
+        num_patches = model.patch_embed.num_patches #
         num_extra_tokens = model.pos_embed.shape[-2] - num_patches # 0/1
 
         # we use 8 frames for pretraining
@@ -264,7 +266,7 @@ def interpolate_pos_embed_internvideo2_new(checkpoint_model, model, orig_t_size 
         orig_size = int(((pos_embed_checkpoint.shape[-2] - num_extra_tokens)//(orig_t_size)) ** 0.5)
         # height (== width) for the new position embedding
         new_size = int((num_patches // (new_t_size))** 0.5)
-        
+
         # class_token and dist_token are kept unchanged
         if orig_t_size != new_t_size:
             logger.info(f"Temporal interpolate from {orig_t_size} to {new_t_size} ({pos_name})")
@@ -293,7 +295,7 @@ def interpolate_pos_embed_internvideo2_new(checkpoint_model, model, orig_t_size 
             pos_tokens = torch.nn.functional.interpolate(
                 pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
             # BT, C, H, W -> BT, H, W, C ->  B, T, H, W, C
-            pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(-1, new_t_size, new_size, new_size, embedding_size) 
+            pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(-1, new_t_size, new_size, new_size, embedding_size)
             pos_tokens = pos_tokens.flatten(1, 3) # B, L, C
             new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
             checkpoint_model[pos_name] = new_pos_embed

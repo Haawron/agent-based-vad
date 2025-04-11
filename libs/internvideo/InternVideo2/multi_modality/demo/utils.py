@@ -6,7 +6,7 @@ import io
 import torch
 from torch import nn
 
-from models.backbones.internvideo2 import pretrain_internvideo2_1b_patch14_224
+from models.backbones.internvideo2 import pretrain_internvideo2_1b_patch14_224, pretrain_internvideo2_6b_patch14_224
 from models.backbones.bert.builder import build_bert
 from models.criterions import get_sim
 from models.backbones.internvideo2.pos_embed import interpolate_pos_embed_internvideo2_new
@@ -78,7 +78,7 @@ def retrieve_text(frames,
 
 def setup_internvideo2(config: dict):
     if "bert" in config.model.text_encoder.name:
-        tokenizer = BertTokenizer.from_pretrained(config.model.text_encoder.pretrained, local_files_only=True)
+        tokenizer = BertTokenizer.from_pretrained(config.model.text_encoder.pretrained)
         model = InternVideo2_Stage2(config=config, tokenizer=tokenizer, is_pretrain=True)
     else:
         model = InternVideo2_Stage2(config=config, is_pretrain=True)
@@ -88,7 +88,7 @@ def setup_internvideo2(config: dict):
         torch.set_float32_matmul_precision('high')
         model = torch.compile(model)
 
-    model = model.to(torch.device(config.device))
+    model = model.to(torch.device(config.device))  # 아니 토크나이저를 왜 device로 옮기는 거임?
     model_without_ddp = model
 
     if (config.pretrained_path.strip() and (os.path.isfile(config.pretrained_path)) or "s3://" in config.pretrained_path):
@@ -228,6 +228,8 @@ class InternVideo2_Stage2(nn.Module):
 
         if encoder_name == 'pretrain_internvideo2_1b_patch14_224':
             vision_encoder = pretrain_internvideo2_1b_patch14_224(self.config.model)
+        elif encoder_name == 'pretrain_internvideo2_6b_patch14_224':
+            vision_encoder = pretrain_internvideo2_6b_patch14_224(self.config.model)
         else:
             raise ValueError(f"Not implemented: {encoder_name}")
 

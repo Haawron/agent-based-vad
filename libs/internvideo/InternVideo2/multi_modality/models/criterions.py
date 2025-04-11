@@ -6,8 +6,8 @@ import torch.nn.functional as F
 from torch import nn
 
 from .utils import allgather_wgrad
-from ..utils.distributed import get_rank, get_world_size
-from ..utils.easydict import EasyDict
+from utils.distributed import get_rank, get_world_size
+from utils.easydict import EasyDict
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def get_sim(
     else:
         sim_v2t = vision_proj @ text_proj.T / temp
         sim_t2v = sim_v2t.T
-    
+
     return sim_v2t, sim_t2v
 
 
@@ -356,7 +356,7 @@ class UTA_Loss(nn.Module):
             self.loss_func = nn.MSELoss()
         elif uta_loss_type == 'smooth_l1':
             self.loss_func = nn.SmoothL1Loss()
-    
+
     def uta_loss(self, student_output, clip_output):
         """forward to calculate the loss
 
@@ -415,7 +415,7 @@ class UTA_Loss(nn.Module):
         return loss_uta
 
     def uta_all_loss(
-        self, 
+        self,
         student_v_output, clip_v_output,
         student_t_output, clip_t_output,
     ):
@@ -453,7 +453,7 @@ class UTA_Loss(nn.Module):
             raise NotImplementedError
 
         return (loss_uta_v + loss_uta_t) / 2.
-    
+
 
 class new_UTA_Loss(nn.Module):
     """mask align clip loss."""
@@ -466,7 +466,7 @@ class new_UTA_Loss(nn.Module):
         logger.info(f'distill_final_features: {distill_final_features}')
         logger.info(f'clip_loss_ratio: {clip_loss_ratio}')
 
-    
+
     def uta_loss(self, student_output, student_output_final,
                  targets_clip_middle_vis, targets_clip_final_vis):
         """forward to calculate the loss

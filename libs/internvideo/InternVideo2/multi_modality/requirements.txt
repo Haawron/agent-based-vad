@@ -1,9 +1,21 @@
+# python=3.10
+# pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu118
+# conda install nvidia/label/cuda-11.8.0::cuda-nvcc
+# conda install nvidia/label/cuda-11.8.0::cuda-runtime
+# conda install nvidia/label/cuda-11.8.0::libcurand
+# conda install conda-forge::libcusparse
+# pip install ninja
+# conda install anaconda::gcc_linux-64  # gcc 11
+# export CPATH=$CONDA_PREFIX/lib/python3.10/site-packages/nvidia/cuda_runtime/include/:$CONDA_PREFIX/lib/python3.10/site-packages/nvidia/cusparse/include:$CONDA_PREFIX/lib/python3.10/site-packages/nvidia/cublas/include/
+# export NVCC_APPEND_FLAGS='-allow-unsupported-compiler'
+# MAX_JOBS=4 pip install flash-attn==2.0.8 --no-build-isolation
+# MAX_JOBS=4 pip install -r requirements.txt
 apex==0.9.10dev
 av==11.0.0
 decord==0.6.0
 deepspeed==0.10.1
 einops==0.7.0
-flash_attn==2.0.8
+# flash_attn==2.0.8
 fvcore==0.1.5.post20221221
 imageio==2.31.1
 librosa==0.10.1
@@ -19,9 +31,13 @@ soundfile==0.12.1
 # tensorflow==2.16.1
 termcolor==2.4.0
 timm==0.5.4
-torch==1.13.1+cu117
-torchaudio==0.13.1+cu117
-torchvision==0.14.1+cu117
+# torch==1.13.1+cu117
+# torchaudio==0.13.1+cu117
+# torchvision==0.14.1+cu117
 tqdm==4.66.1
 transformers==4.28.1
 wandb==0.16.1
+dropout_layer_norm @ git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/layer_norm
+fused_dense_lib @ git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/fused_dense_lib/
+peft==0.13.0
+open_clip_torch
