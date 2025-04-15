@@ -122,6 +122,8 @@ class SegmentDataset(torch.utils.data.Dataset):
         segment_overlap_sec: float = .5,
         num_sampled_segment_frames: int = 16,
         split: Literal['train', 'test'] = 'test',
+        short_side_size: int = 256,
+        crop_size: int = 224,
         mean = (0.48145466, 0.4578275, 0.40821073),
         std = (0.26862954, 0.26130258, 0.27577711),
         rank: int = 0, world_size: int = 1,
@@ -163,9 +165,9 @@ class SegmentDataset(torch.utils.data.Dataset):
         from pytorchvideo import transforms as pv_transforms
         self.video_transform = transforms.Compose(
             [
-                pv_transforms.ShortSideScale(256),
+                pv_transforms.ShortSideScale(short_side_size),
                 pv_transforms.Div255(),
-                CenterCropVideo(224),
+                CenterCropVideo(crop_size),
                 NormalizeVideo(mean=mean, std=std),
             ]
         )

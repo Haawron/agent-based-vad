@@ -17,6 +17,36 @@ anomalous_scale=1.0
 
 ###################################
 
+# 16프레임으로 바꾸면? -> 별 차이 없음
+# docker options
+image_name='imagebind'
+# video feature options
+caption_type='00-rich-context'
+retriever_name='languagebind'
+segment_duration_sec=1.0
+segment_overlap_sec=0.5
+num_sampled_segment_frames=16
+# faiss options
+num_captions_per_segment=10
+anomalous_scale=1.0
+
+###################################
+
+# 1M으로 바꾸면?
+# docker options
+image_name='imagebind'
+# video feature options
+caption_type='01-rich-context-1M'
+retriever_name='imagebind'
+segment_duration_sec=1.0
+segment_overlap_sec=0.5
+num_sampled_segment_frames=16
+# faiss options
+num_captions_per_segment=10
+anomalous_scale=1.0
+
+######################################################################
+
 # Languagebind
 # docker options
 image_name='imagebind'
@@ -30,7 +60,7 @@ num_sampled_segment_frames=8
 num_captions_per_segment=10
 anomalous_scale=1.0
 
-###################################
+######################################################################
 
 # Internvideo2-1b
 # docker options
@@ -92,30 +122,15 @@ anomalous_scale=1.0
 
 ###################################
 
-# 16프레임으로 바꾸면? -> 별 차이 없음
+# siglip
 # docker options
-image_name='imagebind'
+image_name='torch'
 # video feature options
 caption_type='00-rich-context'
-retriever_name='languagebind'
+retriever_name='google/siglip-so400m-patch14-384'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
-num_sampled_segment_frames=16
-# faiss options
-num_captions_per_segment=10
-anomalous_scale=1.0
-
-###################################
-
-# 1M으로 바꾸면?
-# docker options
-image_name='imagebind'
-# video feature options
-caption_type='01-rich-context-1M'
-retriever_name='imagebind'
-segment_duration_sec=1.0
-segment_overlap_sec=0.5
-num_sampled_segment_frames=16
+num_sampled_segment_frames=8
 # faiss options
 num_captions_per_segment=10
 anomalous_scale=1.0

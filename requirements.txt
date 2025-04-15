@@ -14,3 +14,4 @@ langchain
 langchain-community
 huggingface-hub
 datasets
+pytorchvideo @ git+https://github.com/facebookresearch/pytorchvideo.git@6cdc929315aab1b5674b6dcf73b16ec99147735f

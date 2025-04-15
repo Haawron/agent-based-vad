@@ -32,7 +32,6 @@ RUN apt-get update && \
     apt-get install -y \
         vim git zsh htop iftop tmux unzip zip curl wget tree ncdu \
         tzdata bzip2 build-essential net-tools iputils-ping locales && \
-        libgl1-mesa-glx libglib2.0-0 && \
     ln -fs /usr/share/zoneinfo/$TZ /etc/localtime && \
     dpkg-reconfigure --frontend noninteractive tzdata && \
     rm -rf /var/lib/apt/lists/* && \
@@ -50,6 +49,8 @@ RUN pip install transformers==4.48.3 sgl-kernel --force-reinstall --no-deps && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     rm requirements.txt
+RUN pip install pytorchvideo@git+https://github.com/facebookresearch/pytorchvideo.git@6cdc929315aab1b5674b6dcf73b16ec99147735f
+
 
 # ----------------------------------------------------------------------
 RUN chsh -s /usr/bin/zsh ${USERNAME}

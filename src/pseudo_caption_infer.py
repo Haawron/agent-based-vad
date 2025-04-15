@@ -15,31 +15,30 @@ import torch.utils.data
 from sklearn.metrics import roc_auc_score
 from PIL import Image
 
-# import faiss
 import decord
 decord.bridge.reset_bridge()
 
 from einops import rearrange, reduce
 
 
-MEAN_AND_STD = {
-    'imagebind': [
-        (0.48145466, 0.4578275, 0.40821073),
-        (0.26862954, 0.26130258, 0.27577711),
-    ],
-    'languagebind': [
-        (0.48145466, 0.4578275, 0.40821073),
-        (0.26862954, 0.26130258, 0.27577711),
-    ],
-    'internvideo-1b': [
-        (0.485, 0.456, 0.406),
-        (0.229, 0.224, 0.225),
-    ],
-    'internvideo-6b': [
-        (0.485, 0.456, 0.406),
-        (0.229, 0.224, 0.225),
-    ],
-}
+def get_mean_and_std(retriever_name):
+    if retriever_name in [
+        'imagebind', 'languagebind',
+    ]:
+        mean = (0.48145466, 0.4578275, 0.40821073)
+        std = (0.26862954, 0.26130258, 0.27577711)
+    elif retriever_name in [
+        'internvideo-1b', 'internvideo-6b',
+    ]:
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+    elif retriever_name in [
+        'google/siglip-so400m-patch14-384',
+    ]:
+        mean = (0.5, 0.5, 0.5)
+        std = (0.5, 0.5, 0.5)
+
+    return mean, std
 
 
 def load_retriever_model(
@@ -55,6 +54,7 @@ def load_retriever_model(
         from imagebind import data
         from imagebind.models.imagebind_model import ImageBindModel
         model = ImageBindModel.from_pretrained("nielsr/imagebind-huge")
+        short_side_size, crop_size = 256, 224
 
     elif retriever_name == 'languagebind':
         sys.path = ['/code/libs/languagebind'] + sys.path
@@ -62,6 +62,7 @@ def load_retriever_model(
         pretrained_ckpt = 'LanguageBind/LanguageBind_Video_Huge_V1.5_FT'
         model = LanguageBindVideo.from_pretrained(pretrained_ckpt)
         tokenizer = LanguageBindVideoTokenizer.from_pretrained(pretrained_ckpt)
+        short_side_size, crop_size = 256, 224
 
     elif retriever_name in ['internvideo-1b', 'internvideo-6b']:
         sys.path = ['/code/libs/internvideo/InternVideo2/multi_modality'] + sys.path
@@ -77,11 +78,18 @@ def load_retriever_model(
             config.model.vision_encoder.pretrained = '/code/libs/internvideo/InternVideo2/multi_modality/internvideo2-s2_6b-224p-f4.pt'
         config.device = device
         model, tokenizer = setup_internvideo2(config)
+        short_side_size, crop_size = 256, 224
+
+    elif retriever_name in ['google/siglip-so400m-patch14-384']:
+        from transformers import AutoProcessor, AutoModel
+        model = AutoModel.from_pretrained(retriever_name)
+        tokenizer = AutoProcessor.from_pretrained(retriever_name).tokenizer
+        short_side_size, crop_size = 448, 384
 
     model.eval()
     model.to(device)
-    print(f"Loaded {retriever_name}", flush=True)
-    return model, tokenizer
+    print(f"Loaded {retriever_name}, Image Scaling: {short_side_size}ss -> {crop_size}px", flush=True)
+    return model, tokenizer, short_side_size, crop_size
 
 
 def load_captions(p_captions_dir):
@@ -122,7 +130,7 @@ class Inner:
         assert self.p_captions_dir.exists(), f"Captions directory {self.p_captions_dir} does not exist"
 
         # output paths
-        self.p_outdir_embeddings = self.p_captions_root / f"embeddings/{retriever_name}"
+        self.p_outdir_embeddings = self.p_captions_root / f"embeddings/{retriever_name.replace('/', '-')}"
         self.p_normal = self.p_outdir_embeddings / "embs_normal.pt"
         self.p_anomalous = self.p_outdir_embeddings / "embs_anomalous.pt"
         self.p_outdir_scored = self.p_captions_root / "scored"
@@ -157,6 +165,13 @@ class Inner:
             image_embeds /= image_embeds.norm(dim=-1, keepdim=True)
             image_embeds *= 10  # sqrt of 1/temparature of softmax
 
+        elif self.retriever_name in ['google/siglip-so400m-patch14-384']:
+            t = frames.shape[2]
+            frames = rearrange(frames, 'b c t h w -> (b t) c h w')
+            image_embeds = self.model.vision_model.forward(pixel_values=frames).pooler_output
+            image_embeds = reduce(image_embeds, '(b t) d -> b d', 'mean', t=t)
+            image_embeds /= image_embeds.norm(dim=-1, keepdim=True)
+
         return image_embeds  # [B, D_out]
 
     @torch.inference_mode()
@@ -177,6 +192,16 @@ class Inner:
         elif self.retriever_name in ['internvideo-1b', 'internvideo-6b']:
             encoding = 10 * self.model.get_txt_feat(texts)  # the tokenizer is inside the model
 
+        elif self.retriever_name in ['google/siglip-so400m-patch14-384']:
+            encoding = self.tokenizer(
+                texts,
+                max_length=64, padding='max_length',
+                truncation=True, return_tensors='pt'
+            )
+            for k, v in encoding.items():
+                if isinstance(v, torch.Tensor):
+                    encoding[k] = v.to(self.device)
+
         return encoding
 
     @torch.inference_mode()
@@ -188,10 +213,14 @@ class Inner:
             text_outputs = self.model.text_model.forward(**encoding)
             text_embeds = text_outputs[1]
             text_embeds = self.model.text_projection.forward(text_embeds)
-            text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
+            text_embeds /= text_embeds.norm(dim=-1, keepdim=True)
 
         elif self.retriever_name in ['internvideo-1b', 'internvideo-6b']:
             text_embeds = encoding
+
+        elif self.retriever_name in ['google/siglip-so400m-patch14-384']:
+            text_embeds = self.model.text_model.forward(**encoding).pooler_output
+            text_embeds /= text_embeds.norm(dim=-1, keepdim=True)
 
         return text_embeds
 
@@ -230,10 +259,11 @@ class Inner:
         p_outdir_tmf_embeddings_with_options.mkdir(exist_ok=True, parents=True)
         print('Outdir:', p_outdir_tmf_embeddings_with_options, flush=True)
 
-        self.model, _ = load_retriever_model(retriever_name, device)
+        self.model, _, short_side_size, crop_size = load_retriever_model(self.retriever_name, device)
+        mean, std = get_mean_and_std(self.retriever_name)
         transform = SegmentDataset(
-            mean=MEAN_AND_STD[retriever_name][0],
-            std=MEAN_AND_STD[retriever_name][1],
+            short_side_size=short_side_size, crop_size=crop_size,
+            mean=mean, std=std,
         ).video_transform
 
         df_ann_test_rank = df_ann_test.iloc[rank::world_size].reset_index(drop=True)
@@ -262,14 +292,14 @@ class Inner:
         segment_duration_sec: float = 1.,
         segment_overlap_sec: float = .5,
         num_sampled_segment_frames: int = 16,
-        retriever_name: str = 'imagebind',
     ):
         device = f'cuda:{rank % 8}'
         p_outdir_segment_embeddings_with_options = self.p_outdir_embeddings / f"dur={segment_duration_sec:.1f}_ol={segment_overlap_sec:.1f}_fs={num_sampled_segment_frames}" / 'segments'
         p_outdir_segment_embeddings_with_options.mkdir(exist_ok=True, parents=True)
         print('Outdir:', p_outdir_segment_embeddings_with_options, flush=True)
 
-        self.model, _ = load_retriever_model(retriever_name, device)
+        self.model, _, short_side_size, crop_size = load_retriever_model(self.retriever_name, device)
+        mean, std = get_mean_and_std(self.retriever_name)
 
         ds = SegmentDataset(
             p_videos_dir=self.p_videos_root,
@@ -277,8 +307,8 @@ class Inner:
             segment_overlap_sec=segment_overlap_sec,
             num_sampled_segment_frames=num_sampled_segment_frames,
             split='test',
-            mean=MEAN_AND_STD[retriever_name][0],
-            std=MEAN_AND_STD[retriever_name][1],
+            short_side_size=short_side_size, crop_size=crop_size,
+            mean=mean, std=std,
             rank=rank, world_size=world_size,
         )
         dl = torch.utils.data.DataLoader(
@@ -315,7 +345,6 @@ class Inner:
     def extract_caption_embeddings(
         self,
         rank: int = 0, world_size: int = 1,
-        retriever_name: str = 'imagebind',
     ):
         def get_p_rank(p, r):
             return p.with_name(p.stem + f'_{r}.{p.suffix}')
@@ -359,7 +388,7 @@ class Inner:
 
         # load captions and model
         texts_normal, texts_anomalous, categories_anomalous = load_captions(self.p_captions_dir)
-        self.model, self.tokenizer = load_retriever_model(retriever_name, self.device)
+        self.model, self.tokenizer, *_ = load_retriever_model(self.retriever_name, self.device)
 
         # distribute the workload
         texts_normal_subset = texts_normal[rank::world_size]
@@ -440,13 +469,9 @@ class Inner:
         num_sampled_segment_frames: int = 16,
         num_captions_per_segment: int = 10,
         anomalous_scale: float = 1.,
-        retriever_name: str = 'imagebind',
     ):
         assert self.p_outdir_embeddings.exists(), f"Embeddings directory {self.p_outdir_embeddings} does not exist"
         self.p_outdir_scored.mkdir(exist_ok=True, parents=True)
-
-        if not self.p_normal.exists() or not self.p_anomalous.exists():
-            self.model, self.tokenizer = load_retriever_model(retriever_name, self.device)
 
         num_segment_frames = int(segment_duration_sec * 30)
         num_overlap_frames = int(segment_overlap_sec * 30)
@@ -718,6 +743,8 @@ class Inner:
             ##################################################################################################
 
             dot_products = np.dot(embs_segment, embs.T)
+            if self.retriever_name in ['google/siglip-so400m-patch14-384']:
+                dot_products = 112.33287 * dot_products + (-16.54642)  # logits for sigmoid
             indices = np.argsort(-dot_products, axis=-1)[:, :num_captions_per_segment]
             dot_products = np.take_along_axis(dot_products, indices, axis=-1)
             selected_texts = np.take(texts, indices)
@@ -750,6 +777,7 @@ class Inner:
             }
             video_record = {
                 **video_metadata,
+                'retriever_name': self.retriever_name,
                 'segment_records': segment_records,
             }
             tqdm.write(f"Writing to {p_out_score} | {is_anomalous.mean():.6f}")
@@ -787,8 +815,12 @@ class Inner:
                 # segment_score = int(segment_record['is_anomalous'][0])  # anomality of the top 1 caption
                 dots = segment_record['dot_products']
                 # weights = np.ones((len(dots),), dtype=np.float32) / len(dots)
-                weights = np.exp(dots - np.max(dots))
-                weights /= np.sum(weights)
+                if video_record['retriever_name'] in ['google/siglip-so400m-patch14-384']:
+                    probs = 1 / (1 + np.exp(-dots))  # sigmoid
+                    weights = probs / (np.sum(probs) + 1e-6)
+                else:  # softmax
+                    weights = np.exp(dots - np.max(dots))
+                    weights /= np.sum(weights)
                 segment_score = weights @ segment_record['is_anomalous']  # anomality of all captions
                 pred[segment_record['start_idx']:segment_record['end_idx']+1] += segment_score
                 overlap_count[segment_record['start_idx']:segment_record['end_idx']+1] += 1
@@ -833,7 +865,6 @@ class Main:
             segment_duration_sec=segment_duration_sec,
             segment_overlap_sec=segment_overlap_sec,
             num_sampled_segment_frames=num_sampled_segment_frames,
-            retriever_name=retriever_name,
         )
 
     def extract_tmf_embeddings(
@@ -846,7 +877,6 @@ class Main:
         inner.extract_tmf_embeddings(
             rank=rank, world_size=world_size,
             num_tmf_frames=num_tmf_frames,
-            retriever_name=retriever_name,
         )
 
     def extract_caption_embeddings(
@@ -858,7 +888,6 @@ class Main:
         inner = Inner(caption_type, retriever_name, rank, world_size)
         inner.extract_caption_embeddings(
             rank=rank, world_size=world_size,
-            retriever_name=retriever_name,
         )
 
     def match_captions_per_segment(
@@ -880,7 +909,6 @@ class Main:
             num_sampled_segment_frames=num_sampled_segment_frames,
             num_captions_per_segment=num_captions_per_segment,
             anomalous_scale=anomalous_scale,
-            retriever_name=retriever_name,
         )
 
     def evaluate(
