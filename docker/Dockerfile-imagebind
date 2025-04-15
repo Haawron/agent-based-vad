@@ -11,6 +11,7 @@ RUN groupadd -g ${GID} ${USERNAME} && \
 
 # ----------------------------------------------------------------------
 
+# python 3.10
 FROM pytorch/pytorch:1.13.1-cuda11.6-cudnn8-runtime
 ARG USERNAME=hglee
 
@@ -34,7 +35,6 @@ RUN apt-get update && \
     dpkg-reconfigure --frontend noninteractive tzdata && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean
-RUN curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 
 RUN locale-gen en_US.UTF-8 && \
     locale-gen ko_KR.UTF-8 && \

@@ -8,6 +8,11 @@
         "output copy/",
         "datasets/",
     ],
+    "extraPaths": [
+        "/code/libs/imagebind",
+        "/code/libs/languagebind",
+        "/code/libs/internvideo/InternVideo2/multi_modality",
+    ],
     "reportPrivateImportUsage": false,  // pytorch is not familiar with the private import
     "reportCallIssue": "none",  // pyright doesn't consider C-based functions
     "reportAssignmentType": "none",  // pyright doesn't consider Optional types

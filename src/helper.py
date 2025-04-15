@@ -122,6 +122,8 @@ class SegmentDataset(torch.utils.data.Dataset):
         segment_overlap_sec: float = .5,
         num_sampled_segment_frames: int = 16,
         split: Literal['train', 'test'] = 'test',
+        mean = (0.48145466, 0.4578275, 0.40821073),
+        std = (0.26862954, 0.26130258, 0.27577711),
         rank: int = 0, world_size: int = 1,
     ):
         super().__init__()
@@ -164,10 +166,7 @@ class SegmentDataset(torch.utils.data.Dataset):
                 pv_transforms.ShortSideScale(256),
                 pv_transforms.Div255(),
                 CenterCropVideo(224),
-                NormalizeVideo(
-                    mean=(0.48145466, 0.4578275, 0.40821073),
-                    std=(0.26862954, 0.26130258, 0.27577711),
-                ),
+                NormalizeVideo(mean=mean, std=std),
             ]
         )
 

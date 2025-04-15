@@ -11,7 +11,8 @@ num_frames_test = 4
 batch_size = 8
 batch_size_test = 4
 size_t = 224
-max_txt_l = 40
+# max_txt_l = 40
+max_txt_l = 77
 
 origin_num_frames = 4
 

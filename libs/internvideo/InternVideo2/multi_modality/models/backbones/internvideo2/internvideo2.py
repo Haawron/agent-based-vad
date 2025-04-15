@@ -595,7 +595,7 @@ class PretrainInternVideo2(nn.Module):
                 else:
                     # (1, num_img_patches + 1, embed_dim)
                     # print('origin pos_embed.shape:', self.pos_embed.shape)
-                    cls_pos_embed = self.pos_embed[:, 0:1, :]
+                    cls_pos_embed = self.pos_embed[:, :1, :]
                     # print('cls_pos_embed.shape:', cls_pos_embed.shape)
 
                     img_pos_embed = self.pos_embed[:, 1:, :].view(1, self.num_frames, self.patch_embed.num_patches // self.num_frames, self.embed_dim).mean(dim=1)
@@ -657,7 +657,7 @@ class PretrainInternVideo2(nn.Module):
                 else:
                     # (1, num_img_patches + 1, embed_dim)
                     # print('origin pos_embed.shape:', self.pos_embed.shape)
-                    clip_cls_pos_embed = self.clip_pos_embed[:, 0:1, :]
+                    clip_cls_pos_embed = self.clip_pos_embed[:, :1, :]
                     # print('cls_pos_embed.shape:', cls_pos_embed.shape)
 
                     clip_img_pos_embed = self.clip_pos_embed[:, 1:, :].view(1, self.num_frames, self.patch_embed.num_patches // self.num_frames, self.embed_dim).mean(dim=1)

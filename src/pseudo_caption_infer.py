@@ -1,7 +1,7 @@
 import os
 import sys
 sys.path.append('/code/src')
-from helper import get_segments, df_ann_test, sr_num_frames_test, SegmentDataset
+from helper import df_ann_test, sr_num_frames_test, SegmentDataset
 
 import time
 import json
@@ -21,13 +21,25 @@ decord.bridge.reset_bridge()
 
 from einops import rearrange, reduce
 
-sys.path = ['/code/libs/imagebind'] + sys.path  # Prepend to avoid conflicts with installed imagebind
-from imagebind import data
-from imagebind.models.imagebind_model import ModalityType
-from imagebind.models.imagebind_model import ImageBindModel
 
-sys.path = ['/code/libs/languagebind'] + sys.path
-from languagebind import LanguageBindVideo, LanguageBindVideoTokenizer
+MEAN_AND_STD = {
+    'imagebind': [
+        (0.48145466, 0.4578275, 0.40821073),
+        (0.26862954, 0.26130258, 0.27577711),
+    ],
+    'languagebind': [
+        (0.48145466, 0.4578275, 0.40821073),
+        (0.26862954, 0.26130258, 0.27577711),
+    ],
+    'internvideo-1b': [
+        (0.485, 0.456, 0.406),
+        (0.229, 0.224, 0.225),
+    ],
+    'internvideo-6b': [
+        (0.485, 0.456, 0.406),
+        (0.229, 0.224, 0.225),
+    ],
+}
 
 
 def load_retriever_model(
@@ -36,13 +48,36 @@ def load_retriever_model(
 ):
     print(f"Loading {retriever_name}...", flush=True)
     tokenizer = None
+
     if retriever_name == 'imagebind':
+        sys.path = ['/code/libs/imagebind'] + sys.path  # Prepend to avoid conflicts with installed imagebind
         os.chdir('/code/libs/imagebind')  # tokenizer path is hardcoded in imagebind
+        from imagebind import data
+        from imagebind.models.imagebind_model import ImageBindModel
         model = ImageBindModel.from_pretrained("nielsr/imagebind-huge")
+
     elif retriever_name == 'languagebind':
+        sys.path = ['/code/libs/languagebind'] + sys.path
+        from languagebind import LanguageBindVideo, LanguageBindVideoTokenizer
         pretrained_ckpt = 'LanguageBind/LanguageBind_Video_Huge_V1.5_FT'
         model = LanguageBindVideo.from_pretrained(pretrained_ckpt)
         tokenizer = LanguageBindVideoTokenizer.from_pretrained(pretrained_ckpt)
+
+    elif retriever_name in ['internvideo-1b', 'internvideo-6b']:
+        sys.path = ['/code/libs/internvideo/InternVideo2/multi_modality'] + sys.path
+        from demo.utils import setup_internvideo2
+        from demo_config import Config, eval_dict_leaf
+        config = Config.from_file('/code/libs/internvideo/InternVideo2/multi_modality/demo/internvideo2_stage2_config.py')
+        config = eval_dict_leaf(config)
+        if retriever_name == 'internvideo-1b':
+            config.model.vision_encoder.name = 'pretrain_internvideo2_1b_patch14_224'
+            config.model.vision_encoder.pretrained = '/code/libs/internvideo/InternVideo2/multi_modality/InternVideo2-stage2_1b-224p-f4.pt'
+        elif retriever_name == 'internvideo-6b':
+            config.model.vision_encoder.name = 'pretrain_internvideo2_6b_patch14_224'
+            config.model.vision_encoder.pretrained = '/code/libs/internvideo/InternVideo2/multi_modality/internvideo2-s2_6b-224p-f4.pt'
+        config.device = device
+        model, tokenizer = setup_internvideo2(config)
+
     model.eval()
     model.to(device)
     print(f"Loaded {retriever_name}", flush=True)
@@ -83,7 +118,6 @@ class Inner:
 
         # caption paths
         self.p_captions_root = Path(f"/code/output/psuedo-captions/gpt-4o/{caption_type}")
-        # self.p_captions_root = Path("/code/output/psuedo-captions/gpt-4o/01-rich-context-1M")
         self.p_captions_dir = self.p_captions_root / "captions"
         assert self.p_captions_dir.exists(), f"Captions directory {self.p_captions_dir} does not exist"
 
@@ -102,7 +136,7 @@ class Inner:
 
         if self.retriever_name == 'imagebind':
             frames = rearrange(frames, 'b c (t s) h w -> b s c t h w', t=2)  # T=2 fixed as ImageBind expects 2 frames per clip
-            image_embeds = self.model.forward({ModalityType.VISION: frames})[ModalityType.VISION]
+            image_embeds = self.model.forward({'vision': frames})['vision']
 
         elif self.retriever_name == 'languagebind':
             t = 8  # LanguageBind expects 8 frames per clip
@@ -114,8 +148,18 @@ class Inner:
             image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
             image_embeds = reduce(image_embeds, '(b s) d -> b d', 'mean', s=s)
 
+        elif self.retriever_name in ['internvideo-1b', 'internvideo-6b']:
+            t = 4
+            s = frames.shape[2] // t
+            frames = rearrange(frames, 'b c (t s) h w -> (b s) t c h w', t=t)
+            image_embeds = self.model.get_vid_feat(frames)
+            image_embeds = reduce(image_embeds, '(b s) d -> b d', 'mean', s=s)
+            image_embeds /= image_embeds.norm(dim=-1, keepdim=True)
+            image_embeds *= 10  # sqrt of 1/temparature of softmax
+
         return image_embeds  # [B, D_out]
 
+    @torch.inference_mode()
     def tokenize_text(self, texts):
         if self.retriever_name == 'imagebind':
             encoding = data.load_and_transform_text(texts, device=self.device)
@@ -130,18 +174,24 @@ class Inner:
                 if isinstance(v, torch.Tensor):
                     encoding[k] = v.to(self.device)
 
+        elif self.retriever_name in ['internvideo-1b', 'internvideo-6b']:
+            encoding = 10 * self.model.get_txt_feat(texts)  # the tokenizer is inside the model
+
         return encoding
 
     @torch.inference_mode()
     def forward_text(self, encoding):
         if self.retriever_name == 'imagebind':
-            text_embeds = self.model.forward({ModalityType.TEXT: encoding})[ModalityType.TEXT]
+            text_embeds = self.model.forward({'text': encoding})['text']
 
         elif self.retriever_name == 'languagebind':
             text_outputs = self.model.text_model.forward(**encoding)
             text_embeds = text_outputs[1]
             text_embeds = self.model.text_projection.forward(text_embeds)
             text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
+
+        elif self.retriever_name in ['internvideo-1b', 'internvideo-6b']:
+            text_embeds = encoding
 
         return text_embeds
 
@@ -154,7 +204,7 @@ class Inner:
         p_outdir_tmf.mkdir(exist_ok=True, parents=True)
         print('Outdir:', p_outdir_tmf, flush=True)
 
-        for idx, row in tqdm(df_ann_test.iterrows(), total=len(df_ann_test), file=sys.stdout):
+        for idx, row in tqdm(df_ann_test.iterrows(), total=len(df_ann_test), file=sys.stdout, position=1):
             raw_rel_video_path = row['raw_rel_video_path']
             p_out_tmf = (p_outdir_tmf / raw_rel_video_path).with_suffix('.jpg')
             p_out_tmf.parent.mkdir(exist_ok=True, parents=True)
@@ -167,7 +217,6 @@ class Inner:
             bg = Image.fromarray(bg.astype(np.uint8))
             bg.save(p_out_tmf, format='jpeg')
 
-    @torch.inference_mode()
     def extract_tmf_embeddings(
         self,
         rank: int = 0, world_size: int = 1,
@@ -182,10 +231,13 @@ class Inner:
         print('Outdir:', p_outdir_tmf_embeddings_with_options, flush=True)
 
         self.model, _ = load_retriever_model(retriever_name, device)
-        transform = SegmentDataset().video_transform
+        transform = SegmentDataset(
+            mean=MEAN_AND_STD[retriever_name][0],
+            std=MEAN_AND_STD[retriever_name][1],
+        ).video_transform
 
         df_ann_test_rank = df_ann_test.iloc[rank::world_size].reset_index(drop=True)
-        for idx, row in tqdm(df_ann_test_rank.iterrows(), total=len(df_ann_test_rank), file=sys.stdout):
+        for idx, row in tqdm(df_ann_test_rank.iterrows(), total=len(df_ann_test_rank), file=sys.stdout, position=1):
             raw_rel_video_path = row['raw_rel_video_path']
             rel_video_path = row['rel_video_path']
             p_out_embedding = (p_outdir_tmf_embeddings_with_options / rel_video_path).with_suffix('.pt')
@@ -225,6 +277,8 @@ class Inner:
             segment_overlap_sec=segment_overlap_sec,
             num_sampled_segment_frames=num_sampled_segment_frames,
             split='test',
+            mean=MEAN_AND_STD[retriever_name][0],
+            std=MEAN_AND_STD[retriever_name][1],
             rank=rank, world_size=world_size,
         )
         dl = torch.utils.data.DataLoader(
@@ -241,7 +295,7 @@ class Inner:
         print(f"Rank {rank} of {world_size} will process {num_total_segments} segments", flush=True)
 
         for segment_data in tqdm(
-            dl, total=len(ds), mininterval=.1, miniters=1, maxinterval=.5, file=sys.stdout,
+            dl, total=len(ds), maxinterval=.5, file=sys.stdout, position=1
         ):
             segment_info = segment_data[0]['segment_info']
             p_video = segment_info['p_video']
@@ -258,7 +312,6 @@ class Inner:
             emb_segment = emb_segment.cpu().numpy()
             np.save(p_out_embedding, emb_segment)
 
-    @torch.inference_mode()
     def extract_caption_embeddings(
         self,
         rank: int = 0, world_size: int = 1,
@@ -268,8 +321,9 @@ class Inner:
             return p.with_name(p.stem + f'_{r}.{p.suffix}')
 
         def extract(texts):
+            stride = 2048  # affects the performance a bit
             embs = []
-            for i in trange(0, len(texts), stride):
+            for i in trange(0, len(texts), stride, position=1):
                 texts_batch = texts[i:i+stride]
                 text_tokens = self.tokenize_text(texts_batch)
                 emb = self.forward_text(text_tokens)
@@ -281,7 +335,9 @@ class Inner:
             if r == 0:
                 output = {
                     'texts': [],
+                    'categories': [],
                     'embeddings': [],
+                    'category_embeddings': [],
                 }
                 for rr in range(world_size):
                     p = get_p_rank(p_out, rr)
@@ -290,8 +346,11 @@ class Inner:
                         time.sleep(5)
                     output_rank = torch.load(p)
                     output['texts'].extend(output_rank['texts'])
+                    output['categories'].extend(output_rank['categories'])
                     output['embeddings'].append(output_rank['embeddings'])
+                    output['category_embeddings'].append(output_rank['category_embeddings'])
                 output['embeddings'] = torch.cat(output['embeddings'], dim=0)
+                output['category_embeddings'] = torch.cat(output['category_embeddings'], dim=0)
                 torch.save(output, p_out)
 
             while not p_out.exists():
@@ -299,7 +358,6 @@ class Inner:
                 time.sleep(5)
 
         # load captions and model
-        stride = 2048
         texts_normal, texts_anomalous, categories_anomalous = load_captions(self.p_captions_dir)
         self.model, self.tokenizer = load_retriever_model(retriever_name, self.device)
 
@@ -315,14 +373,38 @@ class Inner:
         tqdm.write(msg)
 
         # prompting
-        texts_normal_subset = [
-            f'Normal: {text}'
-            for text in texts_normal_subset
-        ]
-        texts_anomalous_subset = [
-            f'Anomalous: {text}'
-            for text, category in zip(texts_anomalous_subset, categories_anomalous_subset)
-        ]
+        # 69.54
+        def prompt_normal(text):
+            return text
+        def prompt_anomalous(text, category):
+            return text
+
+        # 79.67
+        # def prompt_normal(text):
+        #     return f'Normal: {text}'
+        # def prompt_anomalous(text, category):
+        #     return f'Anomalous: {text}'
+
+        # 81.67
+        # def prompt_normal(text):
+        #     return f'[Normal] {text}'
+        # def prompt_anomalous(text, category):
+        #     return f'[Anomalous,{category}]: {text}'
+
+        # 82.08
+        # def prompt_normal(text):
+        #     return f'[Normal] {text}'
+        # def prompt_anomalous(text, category):
+        #     return f'[Anomalous]: {text}'
+
+        # 81.78, 82.13 (맨 처음 프롬프트 SVD 한 거 빼면 이거 나옴)
+        # def prompt_normal(text):
+        #     return f'[normal] {text}'
+        # def prompt_anomalous(text, category):
+        #     return f'[Anomalous]: {text}'
+
+        texts_normal_subset = [prompt_normal(text) for text in texts_normal_subset]
+        texts_anomalous_subset = [prompt_anomalous(text, category) for text, category in zip(texts_anomalous_subset, categories_anomalous_subset)]
 
         # create output directories
         self.p_outdir_embeddings.mkdir(exist_ok=True, parents=True)
@@ -333,14 +415,16 @@ class Inner:
         p_normal_rank.unlink(missing_ok=True)
         p_anomalous_rank.unlink(missing_ok=True)
 
-        for texts, p_rank, p in zip(
+        for idx, (texts, p_rank, p) in enumerate(zip(
             [texts_normal_subset, texts_anomalous_subset],
             [p_normal_rank, p_anomalous_rank],
             [self.p_normal, self.p_anomalous],
-        ):
+        )):
             output_rank = {
                 'texts': texts,
+                'categories': 'Normal' if idx == 0 else (['Anomalous'] + categories_anomalous_subset),
                 'embeddings': extract(texts),
+                'category_embeddings': extract(['Normal'] if idx == 0 else (['Anomalous'] + categories_anomalous_subset)),
             }
             torch.save(output_rank, p_rank)
             gather_and_save_embeddings(p, rank)
@@ -368,8 +452,8 @@ class Inner:
         num_overlap_frames = int(segment_overlap_sec * 30)
         texts_normal, texts_anomalous, categories_anomalous = load_captions(self.p_captions_dir)
 
-        normals = torch.load(self.p_normal)
-        anomalouses = torch.load(self.p_anomalous)
+        normals = torch.load(self.p_normal, weights_only=True)
+        anomalouses = torch.load(self.p_anomalous, weights_only=True)
         embs_normal = normals['embeddings'].numpy()  # [NUM_NORMAL, D_OUT]
         embs_anomalous = anomalouses['embeddings'].numpy() * anomalous_scale  # [NUM_ANOMALOUS, D_OUT]
         embs = np.concatenate([embs_normal, embs_anomalous], axis=0)
@@ -390,11 +474,11 @@ class Inner:
         emb_anomalous_mean_unit = emb_anomalous_mean / np.linalg.norm(emb_anomalous_mean)
         p_svd_anom = self.p_anomalous.with_name(self.p_anomalous.stem + f'_svd.{self.p_anomalous.suffix}')
         if p_svd_anom.exists():
-            embs_anomalous_sing = torch.load(p_svd_anom)
+            embs_anomalous_sing = torch.load(p_svd_anom, weights_only=True).numpy()
         else:
             _, _, embs_anomalous_sing = np.linalg.svd(embs_anomalous, full_matrices=False)
             if rank == 0:
-                torch.save(embs_anomalous_sing, p_svd_anom)
+                torch.save(torch.from_numpy(embs_anomalous_sing), p_svd_anom)
         # _, _, embs_anomalous_pc = np.linalg.svd(embs_anomalous - emb_anomalous_mean, full_matrices=False)
 
         emb_text_mean = (num_normals * emb_normal_mean + num_anomalouses * emb_anomalous_mean) / (num_normals + num_anomalouses)
@@ -425,13 +509,12 @@ class Inner:
 
         df_ann_test_rank = distribute_workload(
             df_ann_test.join(sr_num_frames_test, on='raw_rel_video_path'), rank, world_size)
-        pbar = tqdm(
+        for idx, row in tqdm(
             df_ann_test_rank.iterrows(),
             total=len(df_ann_test_rank),
             file=sys.stdout,
             position=1
-        )
-        for idx, row in pbar:
+        ):
             p_out_score = (self.p_outdir_scored / row['rel_video_path']).with_suffix('.json')
             p_out_score.parent.mkdir(exist_ok=True, parents=True)
             p_segment_dir = p_segment_embeddings_with_options / row['rel_video_path'].split('.')[0]
@@ -449,27 +532,38 @@ class Inner:
             # embs_segment -= np.einsum('i,j,hj->hi', emb_proj_delta_units, emb_proj_delta_units, embs_segment)
             # embs_segment *= norms / np.linalg.norm(embs_segment, axis=-1, keepdims=True)
 
-            #
+            # 78.15
             # embs_segment -= np.einsum('i,j,hj->hi', emb_anomalous_mean_unit, emb_anomalous_mean_unit, embs_segment)
+
+            # 79.59
+            # embs_segment -= np.einsum('gi,gj,hj->hi', embs_anomalous_sing[:2], embs_anomalous_sing[:2], embs_segment)
+
+            # 79.66
+            # embs_segment -= np.einsum('gi,gj,hj->hi', embs_anomalous_sing[:2], embs_anomalous_sing[:2], embs_segment)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
 
             ################
             # using segment mean
             emb_segment_mean = embs_segment.mean(axis=0)
 
             # windowed mean
-            window = 120
-            embs_segment_mean = np.pad(embs_segment, ((window // 2 + 1, window // 2 - 1), (0, 0)), mode='constant')
-            embs_segment_mean = np.cumsum(embs_segment_mean, axis=0)
-            embs_segment_mean = embs_segment_mean[window:] - embs_segment_mean[:-window]
-            counts = np.convolve(np.ones(embs_segment.shape[0]), np.ones(window), mode='same')
-            if counts.shape[0] > embs_segment_mean.shape[0]:
-                diff = counts.shape[0] - embs_segment_mean.shape[0]
-                counts = counts[diff//2:-(diff-diff//2)]
-            embs_segment_mean /= counts[:, None]
+            # window = 120
+            # embs_segment_mean = np.pad(embs_segment, ((window // 2 + 1, window // 2 - 1), (0, 0)), mode='constant')
+            # embs_segment_mean = np.cumsum(embs_segment_mean, axis=0)
+            # embs_segment_mean = embs_segment_mean[window:] - embs_segment_mean[:-window]
+            # counts = np.convolve(np.ones(embs_segment.shape[0]), np.ones(window), mode='same')
+            # if counts.shape[0] > embs_segment_mean.shape[0]:
+            #     diff = counts.shape[0] - embs_segment_mean.shape[0]
+            #     counts = counts[diff//2:-(diff-diff//2)]
+            # embs_segment_mean /= counts[:, None]
 
             # 54.68
             # embs_segment += np.einsum('i,j,j->i', emb_anomalous_mean_unit, emb_anomalous_mean_unit, emb_segment_mean)
             # embs_segment -= np.einsum('i,j,j->i', emb_normal_mean_unit, emb_normal_mean_unit, emb_segment_mean)
+
+            # 79.47
+            # embs_segment -= np.einsum('hi,hj,j->i', embs_anomalous_sing[:2], embs_anomalous_sing[:2], emb_segment_mean)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
 
             # 76.83
             # embs_segment -= np.einsum('i,j,j->i', emb_delta_units, emb_delta_units, emb_segment_mean)
@@ -481,10 +575,13 @@ class Inner:
 
             # 77.50 -> 78.20
             # embs_segment -= np.einsum('i,j,j->i', emb_anomalous_mean_unit, emb_anomalous_mean_unit, emb_segment_mean)
+            # 78.14
+            # embs_segment -= np.einsum('i,j,j->i', emb_anomalous_mean_unit, emb_anomalous_mean_unit, emb_segment_mean)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
             # 78.36 (120), 78.41 (240)
             # embs_segment -= np.einsum('i,j,hj->hi', emb_anomalous_mean_unit, emb_anomalous_mean_unit, embs_segment_mean)
             # 79.72 (120), 79.62 (240)
-            embs_segment -= np.einsum('gi,gj,hj->hi', embs_anomalous_sing[:2], embs_anomalous_sing[:2], embs_segment_mean)
+            # embs_segment -= np.einsum('gi,gj,hj->hi', embs_anomalous_sing[:2], embs_anomalous_sing[:2], embs_segment_mean)
 
             # 64.43: BG를 뺐을 때 더 낮은 거 보면 BG에도 anomality 정보가 들어있다는 뜻임
             # 아닌가 BG가 anomality context를 더 잘 담고 있다고 생각하면 되나?
@@ -506,11 +603,20 @@ class Inner:
             ################
             # using bg
             p_tmf = (self.p_outdir_embeddings / 'tmf_frames=64' / row['rel_video_path']).with_suffix('.pt')
-            emb_bg = torch.load(p_tmf).numpy()
+            emb_bg = torch.load(p_tmf, weights_only=True).numpy()
 
             # 76.78 아 왜
             # 77.25 -> 77.76
             # embs_segment -= np.einsum('i,j,j->i', emb_anomalous_mean_unit, emb_anomalous_mean_unit, emb_bg)
+            # 77.83
+            # embs_segment -= np.einsum('i,j,j->i', emb_anomalous_mean_unit, emb_anomalous_mean_unit, emb_bg)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
+            # 79.47
+            # embs_segment -= np.einsum('hi,hj,j->i', embs_anomalous_sing[:2], embs_anomalous_sing[:2], emb_bg)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
+            # 73.02
+            # embs_segment -= np.einsum('hi,hj,j->i', embs_anomalous_sing[:num_captions_per_segment], embs_anomalous_sing[:num_captions_per_segment], emb_bg)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
 
             # 77.54: 엥 이건 그냥 BG 상관 없이 anom mean project out 하는 거임
             # emb_bg_anom = np.einsum('i,j,j->i', emb_anomalous_mean_unit, emb_anomalous_mean_unit, emb_bg)
@@ -539,9 +645,15 @@ class Inner:
 
             # 74.86
             # embs_segment -= np.einsum('i,j,j->i', emb_proj_delta_units, emb_proj_delta_units, emb_bg)
+            # 75.61
+            # embs_segment -= np.einsum('i,j,j->i', emb_proj_delta_units, emb_proj_delta_units, emb_bg)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
 
             # 75.78
             # embs_segment -= np.einsum('i,j,j->i', emb_delta_units, emb_delta_units, emb_bg)
+            # 75.62
+            # embs_segment -= np.einsum('i,j,j->i', emb_delta_units, emb_delta_units, emb_bg)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
 
             # 74.04
             # embs_segment -= np.einsum('i,j,j->i', emb_proj_delta, emb_proj_delta, emb_bg)
@@ -588,6 +700,21 @@ class Inner:
             # 64.45
             # embs_segment -= np.einsum('hi,hj,j->i', embs_anomalous_pc[:8], embs_anomalous_pc[:8], emb_bg)
 
+            ################
+            # using scaling
+
+            # dots_bg = embs @ emb_bg
+            # probs_bg = np.exp(dots_bg - np.max(dots_bg))
+            # probs_bg /= np.sum(probs_bg)
+            # args_norm = np.argsort(dots_bg[:num_normals])[::-1][-num_captions_per_segment:]
+            # args_anom = num_normals + np.argsort(dots_bg[num_normals:])[::-1][-num_captions_per_segment:]
+            # prob_bg_norm = np.sum(probs_bg[args_norm])
+            # prob_bg_anom = np.sum(probs_bg[args_anom])
+            # calib_ratio = min(1., prob_bg_norm / prob_bg_anom)
+            # # print(dot_bg_norm, dot_bg_anom, dot_bg_norm / dot_bg_anom, calib_ratio)
+            # print(prob_bg_norm, prob_bg_anom, prob_bg_norm / prob_bg_anom, calib_ratio, np.log(calib_ratio))
+            # embs = np.concatenate([embs_normal, calib_ratio * embs_anomalous], axis=0)
+
             ##################################################################################################
 
             dot_products = np.dot(embs_segment, embs.T)
@@ -595,7 +722,6 @@ class Inner:
             dot_products = np.take_along_axis(dot_products, indices, axis=-1)
             selected_texts = np.take(texts, indices)
             is_anomalous = indices > len(texts_normal)
-            pbar.set_postfix_str(f'{is_anomalous.mean():.6f}')
 
             segment_records = []
             for idx, p_segment in enumerate(p_segments):
@@ -626,7 +752,7 @@ class Inner:
                 **video_metadata,
                 'segment_records': segment_records,
             }
-            tqdm.write(f"Writing to {p_out_score}")
+            tqdm.write(f"Writing to {p_out_score} | {is_anomalous.mean():.6f}")
             json.dump(video_record, p_out_score.open('w'))
         print()
 
@@ -660,6 +786,7 @@ class Inner:
             for segment_record in segment_records:
                 # segment_score = int(segment_record['is_anomalous'][0])  # anomality of the top 1 caption
                 dots = segment_record['dot_products']
+                # weights = np.ones((len(dots),), dtype=np.float32) / len(dots)
                 weights = np.exp(dots - np.max(dots))
                 weights /= np.sum(weights)
                 segment_score = weights @ segment_record['is_anomalous']  # anomality of all captions

@@ -88,7 +88,7 @@ def setup_internvideo2(config: dict):
         torch.set_float32_matmul_precision('high')
         model = torch.compile(model)
 
-    model = model.to(torch.device(config.device))  # 아니 토크나이저를 왜 device로 옮기는 거임?
+    model = model.to(torch.device(config.device))
     model_without_ddp = model
 
     if (config.pretrained_path.strip() and (os.path.isfile(config.pretrained_path)) or "s3://" in config.pretrained_path):
@@ -184,7 +184,7 @@ class InternVideo2_Stage2(nn.Module):
         # whether save temporal dimension
         # keep_temporal=self.config.model.vision_encoder.keep_temporal
         if test:
-            vision_embeds, pooled_vision_embeds, _, _ = self.vision_encoder(
+            vision_embeds, pooled_vision_embeds, _, _ = self.vision_encoder.forward(
                 image, None, use_image)
             return vision_embeds, pooled_vision_embeds
         else:

@@ -27,10 +27,13 @@ run_worker() {
     local ngpus=$(nvidia-smi -L | wc -l)
 
     local tp_size="${1:-4}"
-    local world_size=$(( $ngpus / $tp_size ))
     local model_path="$2"
-    local exp_name="$3"
-    local system_prompt="$4"
+    local host_addr="${3:-llm_server}"
+    local port="${4:-50001}"
+    local exp_name="$5"
+    local system_prompt="$6"
+
+    local world_size=$(( $ngpus / $tp_size ))
 
     args=()
     if [ -n "$model_path" ]; then
@@ -52,7 +55,7 @@ run_worker() {
             --name "pcg_worker${rank:-0}" \
             torch \
                 python src/pseudo_caption_generate.py run \
-                    --host llm_server --port 50001 \
+                    --host $host_addr --port $port \
                     --rank ${rank:-0} --world_size ${world_size:-1} \
                     "${args[@]}"
     done && docker logs -f pcg_worker0
@@ -69,6 +72,12 @@ llm_model='meta-llama/Llama-3.3-70B-Instruct'
 tp_size=8
 load_llm_server $tp_size $llm_model
 run_worker $tp_size $llm_model
+
+###############################################################
+
+llm_model='meta-llama/Llama-4-Scout-17B-16E-Instruct'
+tp_size=8
+run_worker $tp_size $llm_model '161.122.21.222' 8080
 
 ###############################################################
 
