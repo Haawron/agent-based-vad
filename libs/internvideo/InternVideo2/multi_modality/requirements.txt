@@ -37,8 +37,8 @@ timm==0.5.4
 tqdm==4.66.1
 transformers==4.28.1
 wandb==0.16.1
-dropout_layer_norm @ git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/layer_norm
-fused_dense_lib @ git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/fused_dense_lib/
+# dropout_layer_norm @ git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/layer_norm
+# fused_dense_lib @ git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/fused_dense_lib/
 peft==0.13.0
 open_clip_torch
 pytorchvideo @ git+https://github.com/facebookresearch/pytorchvideo.git@6cdc929315aab1b5674b6dcf73b16ec99147735f

@@ -43,9 +43,10 @@ RUN locale-gen en_US.UTF-8 && \
 
 # Install python packages
 RUN git clone https://github.com/OpenGVLab/InternVideo.git /internvideo
-RUN cd /internvideo/InternVideo2/multi_modality && MAX_JOBS=64 pip install .
-RUN MAX_JOBS=64 pip install dropout_layer_norm@git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/layer_norm
-RUN MAX_JOBS=64 TORCH_CUDA_ARCH_LIST='8.6' pip install fused_dense_lib@git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/fused_dense_lib/
+RUN cd /internvideo/InternVideo2/multi_modality && MAX_JOBS=8 pip install .
+RUN MAX_JOBS=8 pip install dropout_layer_norm@git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/layer_norm
+RUN MAX_JOBS=8 TORCH_CUDA_ARCH_LIST='8.6' pip install fused_dense_lib@git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3#subdirectory=csrc/fused_dense_lib/
+RUN MAX_JOBS=8 pip install pytorchvideo@git+https://github.com/facebookresearch/pytorchvideo.git@6cdc929315aab1b5674b6dcf73b16ec99147735f
 RUN pip install jupyter ipykernel fire
 RUN rm -rf /internvideo
 

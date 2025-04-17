@@ -120,6 +120,21 @@ num_sampled_segment_frames=4
 num_captions_per_segment=10
 anomalous_scale=1.0
 
+######################################################################
+
+# siglip 224
+# docker options
+image_name='torch'
+# video feature options
+caption_type='00-rich-context'
+retriever_name='google/siglip-so400m-patch14-224'
+segment_duration_sec=1.0
+segment_overlap_sec=0.5
+num_sampled_segment_frames=8
+# faiss options
+num_captions_per_segment=10
+anomalous_scale=1.0
+
 ###################################
 
 # siglip
@@ -131,6 +146,51 @@ retriever_name='google/siglip-so400m-patch14-384'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=8
+# faiss options
+num_captions_per_segment=10
+anomalous_scale=1.0
+
+###################################
+
+# siglip 16 프레임
+# docker options
+image_name='torch'
+# video feature options
+caption_type='00-rich-context'
+retriever_name='google/siglip-so400m-patch14-384'
+segment_duration_sec=1.0
+segment_overlap_sec=0.5
+num_sampled_segment_frames=16
+# faiss options
+num_captions_per_segment=10
+anomalous_scale=1.0
+
+###################################
+
+# siglip2
+# docker options
+image_name='internvideo'
+# video feature options
+caption_type='00-rich-context'
+retriever_name='google/siglip2-so400m-patch14-384'
+segment_duration_sec=1.0
+segment_overlap_sec=0.5
+num_sampled_segment_frames=8
+# faiss options
+num_captions_per_segment=10
+anomalous_scale=1.0
+
+###################################
+
+# siglip2 16 프레임
+# docker options
+image_name='internvideo'
+# video feature options
+caption_type='00-rich-context'
+retriever_name='google/siglip2-so400m-patch14-384'
+segment_duration_sec=1.0
+segment_overlap_sec=0.5
+num_sampled_segment_frames=16
 # faiss options
 num_captions_per_segment=10
 anomalous_scale=1.0

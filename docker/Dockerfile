@@ -44,13 +44,12 @@ RUN locale-gen en_US.UTF-8 && \
 
 
 # Install python packages
-RUN pip install transformers==4.48.3 sgl-kernel --force-reinstall --no-deps && \
+RUN pip install transformers==4.48.3 && \
+    pip install sgl-kernel --force-reinstall --no-deps && \
     pip install "sglang[all]>=0.4.3.post2" --find-links https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     rm requirements.txt
-RUN pip install pytorchvideo@git+https://github.com/facebookresearch/pytorchvideo.git@6cdc929315aab1b5674b6dcf73b16ec99147735f
-
 
 # ----------------------------------------------------------------------
 RUN chsh -s /usr/bin/zsh ${USERNAME}

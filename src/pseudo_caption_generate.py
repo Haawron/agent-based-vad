@@ -71,7 +71,7 @@ class Main:
 
         p_outdir = Path(f"output/psuedo-captions/{model_name.replace('/', '-')}/{exp_name}/captions")
         p_outdir.mkdir(parents=True, exist_ok=True)
-        pbar = trange(rank, num_seeds, world_size, mininterval=.001, desc="Seeds", position=1)
+        pbar = trange(rank, num_seeds, world_size, mininterval=.001, maxinterval=.5, desc="Seeds", position=1)
         for seed in pbar:
             p_out = p_outdir / f'{seed:08d}.json'
             if p_out.exists():

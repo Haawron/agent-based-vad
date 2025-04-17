@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.utils.data
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, roc_curve
 from PIL import Image
 
 import decord
@@ -33,7 +33,10 @@ def get_mean_and_std(retriever_name):
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
     elif retriever_name in [
+        'google/siglip-so400m-patch14-224',
+        'google/siglip2-so400m-patch14-224',
         'google/siglip-so400m-patch14-384',
+        'google/siglip2-so400m-patch14-384',
     ]:
         mean = (0.5, 0.5, 0.5)
         std = (0.5, 0.5, 0.5)
@@ -49,11 +52,13 @@ def load_retriever_model(
     tokenizer = None
 
     if retriever_name == 'imagebind':
-        sys.path = ['/code/libs/imagebind'] + sys.path  # Prepend to avoid conflicts with installed imagebind
+        p_root = Path('/code/libs/imagebind')
+        sys.path = [str(p_root)] + sys.path  # Prepend to avoid conflicts with installed imagebind
         os.chdir('/code/libs/imagebind')  # tokenizer path is hardcoded in imagebind
-        from imagebind import data
         from imagebind.models.imagebind_model import ImageBindModel
+        from imagebind.models.multimodal_preprocessors import SimpleTokenizer
         model = ImageBindModel.from_pretrained("nielsr/imagebind-huge")
+        tokenizer = SimpleTokenizer(bpe_path=p_root / 'bpe/bpe_simple_vocab_16e6.txt.gz')
         short_side_size, crop_size = 256, 224
 
     elif retriever_name == 'languagebind':
@@ -65,45 +70,54 @@ def load_retriever_model(
         short_side_size, crop_size = 256, 224
 
     elif retriever_name in ['internvideo-1b', 'internvideo-6b']:
-        sys.path = ['/code/libs/internvideo/InternVideo2/multi_modality'] + sys.path
+        p_root = Path('/code/libs/internvideo/InternVideo2/multi_modality')
+        sys.path = [str(p_root)] + sys.path
         from demo.utils import setup_internvideo2
         from demo_config import Config, eval_dict_leaf
-        config = Config.from_file('/code/libs/internvideo/InternVideo2/multi_modality/demo/internvideo2_stage2_config.py')
+        config = Config.from_file(p_root / 'demo/internvideo2_stage2_config.py')
         config = eval_dict_leaf(config)
         if retriever_name == 'internvideo-1b':
             config.model.vision_encoder.name = 'pretrain_internvideo2_1b_patch14_224'
-            config.model.vision_encoder.pretrained = '/code/libs/internvideo/InternVideo2/multi_modality/InternVideo2-stage2_1b-224p-f4.pt'
+            config.model.vision_encoder.pretrained = p_root / 'InternVideo2-stage2_1b-224p-f4.pt'
         elif retriever_name == 'internvideo-6b':
             config.model.vision_encoder.name = 'pretrain_internvideo2_6b_patch14_224'
-            config.model.vision_encoder.pretrained = '/code/libs/internvideo/InternVideo2/multi_modality/internvideo2-s2_6b-224p-f4.pt'
+            config.model.vision_encoder.pretrained = p_root / 'internvideo2-s2_6b-224p-f4.pt'
         config.device = device
         model, tokenizer = setup_internvideo2(config)
         short_side_size, crop_size = 256, 224
 
-    elif retriever_name in ['google/siglip-so400m-patch14-384']:
+    elif retriever_name in [
+        'google/siglip-so400m-patch14-224',
+        'google/siglip2-so400m-patch14-224',
+        'google/siglip-so400m-patch14-384',
+        'google/siglip2-so400m-patch14-384',
+    ]:
         from transformers import AutoProcessor, AutoModel
         model = AutoModel.from_pretrained(retriever_name)
         tokenizer = AutoProcessor.from_pretrained(retriever_name).tokenizer
-        short_side_size, crop_size = 448, 384
+        if retriever_name.endswith('224'):
+            short_side_size, crop_size = 256, 224
+        elif retriever_name.endswith('384'):
+            short_side_size, crop_size = 448, 384
 
     model.eval()
-    model.to(device)
+    model.to(device, non_blocking=True)
     print(f"Loaded {retriever_name}, Image Scaling: {short_side_size}ss -> {crop_size}px", flush=True)
     return model, tokenizer, short_side_size, crop_size
 
 
 def load_captions(p_captions_dir):
     print("Loading captions...")
-    texts_normal, texts_anomalous, categories_anomalous = [], [], []
+    texts_norm, texts_anom, categories_anom = [], [], []
     for p_json in p_captions_dir.glob("*.json"):
         with p_json.open("r") as f:
             captions = json.load(f)
             for caption_set in captions['descriptions']:
-                texts_normal.append(caption_set['normal']['description'])
-                texts_anomalous.append(caption_set['anomalous']['description'])
-                categories_anomalous.append(caption_set['anomalous']['category'])
-    print(f'Loaded {len(texts_normal)} normal captions and {len(texts_anomalous)} anomalous captions')
-    return texts_normal, texts_anomalous, categories_anomalous
+                texts_norm.append(caption_set['normal']['description'])
+                texts_anom.append(caption_set['anomalous']['description'])
+                categories_anom.append(caption_set['anomalous']['category'])
+    print(f'Loaded {len(texts_norm)} normal captions and {len(texts_anom)} anomalous captions')
+    return texts_norm, texts_anom, categories_anom
 
 
 class Inner:
@@ -131,8 +145,8 @@ class Inner:
 
         # output paths
         self.p_outdir_embeddings = self.p_captions_root / f"embeddings/{retriever_name.replace('/', '-')}"
-        self.p_normal = self.p_outdir_embeddings / "embs_normal.pt"
-        self.p_anomalous = self.p_outdir_embeddings / "embs_anomalous.pt"
+        self.p_norm = self.p_outdir_embeddings / "embs_normal.pt"
+        self.p_anom = self.p_outdir_embeddings / "embs_anomalous.pt"
         self.p_outdir_scored = self.p_captions_root / "scored"
 
         self.model, self.tokenizer = None, None
@@ -163,9 +177,13 @@ class Inner:
             image_embeds = self.model.get_vid_feat(frames)
             image_embeds = reduce(image_embeds, '(b s) d -> b d', 'mean', s=s)
             image_embeds /= image_embeds.norm(dim=-1, keepdim=True)
-            image_embeds *= 10  # sqrt of 1/temparature of softmax
 
-        elif self.retriever_name in ['google/siglip-so400m-patch14-384']:
+        elif self.retriever_name in [
+            'google/siglip-so400m-patch14-224',
+            'google/siglip2-so400m-patch14-224',
+            'google/siglip-so400m-patch14-384',
+            'google/siglip2-so400m-patch14-384',
+        ]:
             t = frames.shape[2]
             frames = rearrange(frames, 'b c t h w -> (b t) c h w')
             image_embeds = self.model.vision_model.forward(pixel_values=frames).pooler_output
@@ -177,7 +195,9 @@ class Inner:
     @torch.inference_mode()
     def tokenize_text(self, texts):
         if self.retriever_name == 'imagebind':
-            encoding = data.load_and_transform_text(texts, device=self.device)
+            # encoding = data.load_and_transform_text(texts, device=self.device)
+            encoding = [self.tokenizer(t).unsqueeze(0).to(self.device, non_blocking=True) for t in texts]
+            encoding = torch.cat(encoding, dim=0)
 
         elif self.retriever_name == 'languagebind':
             encoding = self.tokenizer(
@@ -185,22 +205,30 @@ class Inner:
                 max_length=77, padding='max_length',
                 truncation=True, return_tensors='pt'
             )
-            for k, v in encoding.items():
-                if isinstance(v, torch.Tensor):
-                    encoding[k] = v.to(self.device)
 
         elif self.retriever_name in ['internvideo-1b', 'internvideo-6b']:
-            encoding = 10 * self.model.get_txt_feat(texts)  # the tokenizer is inside the model
+            encoding = self.tokenizer(
+                texts,
+                max_length=77, padding='max_length',
+                truncation=True, return_tensors='pt'
+            )
 
-        elif self.retriever_name in ['google/siglip-so400m-patch14-384']:
+        elif self.retriever_name in [
+            'google/siglip-so400m-patch14-224',
+            'google/siglip2-so400m-patch14-224',
+            'google/siglip-so400m-patch14-384',
+            'google/siglip2-so400m-patch14-384',
+        ]:
             encoding = self.tokenizer(
                 texts,
                 max_length=64, padding='max_length',
                 truncation=True, return_tensors='pt'
             )
+
+        if isinstance(encoding, dict):
             for k, v in encoding.items():
                 if isinstance(v, torch.Tensor):
-                    encoding[k] = v.to(self.device)
+                    encoding[k] = v.to(self.device, non_blocking=True)
 
         return encoding
 
@@ -216,9 +244,16 @@ class Inner:
             text_embeds /= text_embeds.norm(dim=-1, keepdim=True)
 
         elif self.retriever_name in ['internvideo-1b', 'internvideo-6b']:
-            text_embeds = encoding
+            _, text_embeds = self.model.encode_text(encoding)
+            text_embeds = self.model.text_proj.forward(text_embeds)
+            text_embeds /= text_embeds.norm(dim=-1, keepdim=True)
 
-        elif self.retriever_name in ['google/siglip-so400m-patch14-384']:
+        elif self.retriever_name in [
+            'google/siglip-so400m-patch14-224',
+            'google/siglip2-so400m-patch14-224',
+            'google/siglip-so400m-patch14-384',
+            'google/siglip2-so400m-patch14-384',
+        ]:
             text_embeds = self.model.text_model.forward(**encoding).pooler_output
             text_embeds /= text_embeds.norm(dim=-1, keepdim=True)
 
@@ -336,7 +371,7 @@ class Inner:
                 / f'{segment_info["segment_idx"]:04d}.npy'
             )
             p_out_embedding.parent.mkdir(exist_ok=True, parents=True)
-            frames = segment_data[0]['frames'].to(device)
+            frames = segment_data[0]['frames'].to(device, non_blocking=True)
 
             emb_segment = self.forward_video(frames[None])[0]
             emb_segment = emb_segment.cpu().numpy()
@@ -373,10 +408,10 @@ class Inner:
                     while not p.exists():
                         tqdm.write(f"Waiting for rank {rr} to finish saving embeddings...")
                         time.sleep(5)
-                    output_rank = torch.load(p)
+                    output_rank = torch.load(p, weights_only=False)
                     output['texts'].extend(output_rank['texts'])
-                    output['categories'].extend(output_rank['categories'])
                     output['embeddings'].append(output_rank['embeddings'])
+                    output['categories'].extend(output_rank['categories'])
                     output['category_embeddings'].append(output_rank['category_embeddings'])
                 output['embeddings'] = torch.cat(output['embeddings'], dim=0)
                 output['category_embeddings'] = torch.cat(output['category_embeddings'], dim=0)
@@ -403,10 +438,10 @@ class Inner:
 
         # prompting
         # 69.54
-        def prompt_normal(text):
-            return text
-        def prompt_anomalous(text, category):
-            return text
+        # def prompt_normal(text):
+        #     return text
+        # def prompt_anomalous(text, category):
+        #     return text
 
         # 79.67
         # def prompt_normal(text):
@@ -432,29 +467,49 @@ class Inner:
         # def prompt_anomalous(text, category):
         #     return f'[Anomalous]: {text}'
 
+        #
+        def prompt_normal(text):
+            return json.dumps({
+                'Description': text,
+                'Anomality': 'Normal',
+            })
+        def prompt_anomalous(text, category):
+            return json.dumps({
+                'Description': text,
+                'Anomality': 'Anomalous',
+            })
+
         texts_normal_subset = [prompt_normal(text) for text in texts_normal_subset]
         texts_anomalous_subset = [prompt_anomalous(text, category) for text, category in zip(texts_anomalous_subset, categories_anomalous_subset)]
 
         # create output directories
         self.p_outdir_embeddings.mkdir(exist_ok=True, parents=True)
-        self.p_normal.unlink(missing_ok=True)
-        self.p_anomalous.unlink(missing_ok=True)
-        p_normal_rank = get_p_rank(self.p_normal, rank)
-        p_anomalous_rank = get_p_rank(self.p_anomalous, rank)
+        self.p_norm.unlink(missing_ok=True)
+        self.p_anom.unlink(missing_ok=True)
+        p_normal_rank = get_p_rank(self.p_norm, rank)
+        p_anomalous_rank = get_p_rank(self.p_anom, rank)
         p_normal_rank.unlink(missing_ok=True)
         p_anomalous_rank.unlink(missing_ok=True)
 
         for idx, (texts, p_rank, p) in enumerate(zip(
             [texts_normal_subset, texts_anomalous_subset],
             [p_normal_rank, p_anomalous_rank],
-            [self.p_normal, self.p_anomalous],
+            [self.p_norm, self.p_anom],
         )):
             output_rank = {
                 'texts': texts,
-                'categories': 'Normal' if idx == 0 else (['Anomalous'] + categories_anomalous_subset),
                 'embeddings': extract(texts),
-                'category_embeddings': extract(['Normal'] if idx == 0 else (['Anomalous'] + categories_anomalous_subset)),
             }
+            if idx == 0:  # normal
+                output_rank['categories'] = ['Normal']
+                output_rank['category_embeddings'] = extract(['Normal'])
+            elif idx == 1:  # anomalies
+                cats = categories_anomalous_subset
+                if rank == 0:
+                    cats = ['Anomalous'] + categories_anomalous_subset
+                output_rank['categories'] = cats
+                output_rank['category_embeddings'] = extract(cats)
+
             torch.save(output_rank, p_rank)
             gather_and_save_embeddings(p, rank)
             p_rank.unlink(missing_ok=True)
@@ -475,38 +530,41 @@ class Inner:
 
         num_segment_frames = int(segment_duration_sec * 30)
         num_overlap_frames = int(segment_overlap_sec * 30)
-        texts_normal, texts_anomalous, categories_anomalous = load_captions(self.p_captions_dir)
+        # texts_norm, texts_anom, categories_anomalous = load_captions(self.p_captions_dir)
 
-        normals = torch.load(self.p_normal, weights_only=True)
-        anomalouses = torch.load(self.p_anomalous, weights_only=True)
-        embs_normal = normals['embeddings'].numpy()  # [NUM_NORMAL, D_OUT]
-        embs_anomalous = anomalouses['embeddings'].numpy() * anomalous_scale  # [NUM_ANOMALOUS, D_OUT]
-        embs = np.concatenate([embs_normal, embs_anomalous], axis=0)
-        texts_normal = normals['texts']
-        texts_anomalous = anomalouses['texts']
-        texts = texts_normal + texts_anomalous
+        emb_dict_norm = torch.load(self.p_norm, weights_only=True)
+        emb_dict_anom = torch.load(self.p_anom, weights_only=True)
+        embs_norm = emb_dict_norm['embeddings'].numpy()  # [NUM_NORMAL, D_OUT]
+        embs_anom = emb_dict_anom['embeddings'].numpy() * anomalous_scale  # [NUM_ANOMALOUS, D_OUT]
+        embs_anom_cat = emb_dict_anom['category_embeddings'].numpy()  # [NUM_ANOMALOUS, D_OUT]
+
+        embs = np.concatenate([embs_norm, embs_anom], axis=0)
+        texts_norm = emb_dict_norm['texts']
+        texts_anom = emb_dict_anom['texts']
+        texts = texts_norm + texts_anom
+        texts_cat = emb_dict_anom['categories']
 
         ##################################################################
         # embeddings for calibration
-        num_normals = len(embs_normal)
-        num_anomalouses = len(embs_anomalous)
+        num_norms = len(embs_norm)
+        num_anoms = len(embs_anom)
 
-        emb_normal_mean = embs_normal.mean(axis=0)
+        emb_normal_mean = embs_norm.mean(axis=0)
         emb_normal_mean_unit = emb_normal_mean / np.linalg.norm(emb_normal_mean)
         # _, _, embs_normal_sing = np.linalg.svd(embs_normal, full_matrices=False)
 
-        emb_anomalous_mean = embs_anomalous.mean(axis=0)
+        emb_anomalous_mean = embs_anom.mean(axis=0)
         emb_anomalous_mean_unit = emb_anomalous_mean / np.linalg.norm(emb_anomalous_mean)
-        p_svd_anom = self.p_anomalous.with_name(self.p_anomalous.stem + f'_svd.{self.p_anomalous.suffix}')
+        p_svd_anom = self.p_anom.with_name(self.p_anom.stem + f'_svd.{self.p_anom.suffix}')
         if p_svd_anom.exists():
-            embs_anomalous_sing = torch.load(p_svd_anom, weights_only=True).numpy()
+            embs_anom_sing = torch.load(p_svd_anom, weights_only=True).numpy()
         else:
-            _, _, embs_anomalous_sing = np.linalg.svd(embs_anomalous, full_matrices=False)
+            _, _, embs_anom_sing = np.linalg.svd(embs_anom, full_matrices=False)
             if rank == 0:
-                torch.save(torch.from_numpy(embs_anomalous_sing), p_svd_anom)
+                torch.save(torch.from_numpy(embs_anom_sing), p_svd_anom)
         # _, _, embs_anomalous_pc = np.linalg.svd(embs_anomalous - emb_anomalous_mean, full_matrices=False)
 
-        emb_text_mean = (num_normals * emb_normal_mean + num_anomalouses * emb_anomalous_mean) / (num_normals + num_anomalouses)
+        emb_text_mean = (num_norms * emb_normal_mean + num_anoms * emb_anomalous_mean) / (num_norms + num_anoms)
         emb_text_mean_unit = emb_text_mean / np.linalg.norm(emb_text_mean)
 
         emb_delta = emb_anomalous_mean - emb_normal_mean
@@ -552,13 +610,15 @@ class Inner:
             ##################################################################################################
             # calibrate embeddings
 
+            # embs_segment -= np.einsum('i,j,hj->hi', emb_proj_delta, emb_proj_delta, embs_segment)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
             # 74.33
-            # norms = np.linalg.norm(embs_segment, axis=-1, keepdims=True)
             # embs_segment -= np.einsum('i,j,hj->hi', emb_proj_delta_units, emb_proj_delta_units, embs_segment)
-            # embs_segment *= norms / np.linalg.norm(embs_segment, axis=-1, keepdims=True)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
 
             # 78.15
             # embs_segment -= np.einsum('i,j,hj->hi', emb_anomalous_mean_unit, emb_anomalous_mean_unit, embs_segment)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
 
             # 79.59
             # embs_segment -= np.einsum('gi,gj,hj->hi', embs_anomalous_sing[:2], embs_anomalous_sing[:2], embs_segment)
@@ -595,8 +655,11 @@ class Inner:
             #
             # embs_segment -= np.einsum('i,j,hj->hi', emb_delta_units, emb_delta_units, embs_segment_mean)
 
+            # embs_segment -= np.einsum('i,j,j->i', emb_proj_delta, emb_proj_delta, emb_segment_mean)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
             # 75.71
             # embs_segment -= np.einsum('i,j,j->i', emb_proj_delta_units, emb_proj_delta_units, emb_segment_mean)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
 
             # 77.50 -> 78.20
             # embs_segment -= np.einsum('i,j,j->i', emb_anomalous_mean_unit, emb_anomalous_mean_unit, emb_segment_mean)
@@ -627,8 +690,8 @@ class Inner:
 
             ################
             # using bg
-            p_tmf = (self.p_outdir_embeddings / 'tmf_frames=64' / row['rel_video_path']).with_suffix('.pt')
-            emb_bg = torch.load(p_tmf, weights_only=True).numpy()
+            # p_tmf = (self.p_outdir_embeddings / 'tmf_frames=64' / row['rel_video_path']).with_suffix('.pt')
+            # emb_bg = torch.load(p_tmf, weights_only=True).numpy()
 
             # 76.78 아 왜
             # 77.25 -> 77.76
@@ -668,6 +731,9 @@ class Inner:
             # 65.60
             # embs_segment -= np.einsum('i,j,j->i', emb_normal_mean_unit, emb_normal_mean_unit, emb_bg)
 
+            #
+            # embs_segment -= np.einsum('i,j,j->i', emb_proj_delta, emb_proj_delta, emb_bg)
+            # embs_segment /= np.linalg.norm(embs_segment, axis=-1, keepdims=True)
             # 74.86
             # embs_segment -= np.einsum('i,j,j->i', emb_proj_delta_units, emb_proj_delta_units, emb_bg)
             # 75.61
@@ -743,12 +809,10 @@ class Inner:
             ##################################################################################################
 
             dot_products = np.dot(embs_segment, embs.T)
-            if self.retriever_name in ['google/siglip-so400m-patch14-384']:
-                dot_products = 112.33287 * dot_products + (-16.54642)  # logits for sigmoid
             indices = np.argsort(-dot_products, axis=-1)[:, :num_captions_per_segment]
             dot_products = np.take_along_axis(dot_products, indices, axis=-1)
             selected_texts = np.take(texts, indices)
-            is_anomalous = indices > len(texts_normal)
+            is_anomalous = indices > len(texts_norm)
 
             segment_records = []
             for idx, p_segment in enumerate(p_segments):
@@ -808,20 +872,39 @@ class Inner:
                     preds[rel_video_path] = np.zeros(len(bin_label))
                     continue
             video_record = json.load(p_json.open())
+            retriever_name = video_record['retriever_name']
             segment_records = video_record['segment_records']
             pred = np.zeros(len(bin_label))
             overlap_count = np.zeros(len(bin_label))
             for segment_record in segment_records:
                 # segment_score = int(segment_record['is_anomalous'][0])  # anomality of the top 1 caption
-                dots = segment_record['dot_products']
+                dots = np.array(segment_record['dot_products'])
                 # weights = np.ones((len(dots),), dtype=np.float32) / len(dots)
-                if video_record['retriever_name'] in ['google/siglip-so400m-patch14-384']:
-                    probs = 1 / (1 + np.exp(-dots))  # sigmoid
-                    weights = probs / (np.sum(probs) + 1e-6)
+                if retriever_name in [
+                    'google/siglip-so400m-patch14-224',
+                    'google/siglip2-so400m-patch14-224',
+                    'google/siglip-so400m-patch14-384',
+                    'google/siglip2-so400m-patch14-384',
+                ]:
+                    logit = dots @ (2 * np.array(segment_record['is_anomalous']) - 1)
+                    if retriever_name == 'google/siglip-so400m-patch14-224':
+                        logit = 111.53604888916016 * logit + (-16.545139312744140)
+                    elif retriever_name == 'google/siglip2-so400m-patch14-224':
+                        logit = 109.88122558593750 * logit + (-15.932409286499023)
+                    elif retriever_name == 'google/siglip-so400m-patch14-384':
+                        logit = 112.33287048339844 * logit + (-16.546421051025390)
+                    elif retriever_name == 'google/siglip2-so400m-patch14-384':
+                        logit = 109.89432525634766 * logit + (-15.932647705078125)
+                    segment_score = 1 / (1 + np.exp(-logit))
                 else:  # softmax
+                    if retriever_name == 'languagebind':
+                        dots *= 66.74119567871094
+                    elif retriever_name in ['internvideo-1b', 'internvideo-6b']:
+                        dots *= 100
                     weights = np.exp(dots - np.max(dots))
                     weights /= np.sum(weights)
-                segment_score = weights @ segment_record['is_anomalous']  # anomality of all captions
+                    segment_score = weights @ segment_record['is_anomalous']  # anomality of all captions
+                segment_score = np.clip(segment_score, 0, 1).item()
                 pred[segment_record['start_idx']:segment_record['end_idx']+1] += segment_score
                 overlap_count[segment_record['start_idx']:segment_record['end_idx']+1] += 1
             overlap_count = np.maximum(overlap_count, 1)
@@ -834,7 +917,29 @@ class Inner:
             all_preds = np.concatenate([all_preds, preds[rel_video_path]])
             all_labels = np.concatenate([all_labels, bin_label])
         auc = roc_auc_score(all_labels.astype(int), all_preds)
+        print(f'{auc:.2%}')
         print(auc)
+
+        # curve
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        p_curve = self.p_outdir_scored / 'roc_curve.png'
+        fpr, tpr, thresholds = roc_curve(all_labels.astype(int), all_preds)
+        sns.set_theme(style="whitegrid")
+        plt.figure(figsize=(8, 6))
+        plt.plot(fpr, tpr, label=f'ROC curve (area = {auc:.8f})', color='blue')
+        plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'Receiver Operating Characteristic\n{retriever_name}')
+        plt.legend(loc='lower right')
+        plt.savefig(p_curve)
+        plt.close()
+
+        from imgcat import imgcat
+        imgcat(p_curve.open('rb'))
 
 
 class Main:

@@ -44,7 +44,7 @@ RUN locale-gen en_US.UTF-8 && \
 # Install python packages
 RUN git clone https://github.com/facebookresearch/ImageBind.git /imagebind && rm /imagebind/requirements.txt
 COPY libs/imagebind/requirements.txt /imagebind
-RUN cd /imagebind && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu116 .
+RUN cd /imagebind && MAX_JOBS=24 pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu116 .
 RUN rm -rf /imagebind
 
 # ----------------------------------------------------------------------
