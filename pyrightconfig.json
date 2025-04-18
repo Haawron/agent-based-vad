@@ -2,6 +2,7 @@
     "exclude": [
         "__pycache__",
         "*.egg-info/",
+        "*.gz",
         "data/",
         "logs/",
         "output/",
@@ -12,6 +13,7 @@
         "/code/libs/imagebind",
         "/code/libs/languagebind",
         "/code/libs/internvideo/InternVideo2/multi_modality",
+        "/code/libs/perception_models",
     ],
     "reportPrivateImportUsage": false,  // pytorch is not familiar with the private import
     "reportCallIssue": "none",  // pyright doesn't consider C-based functions

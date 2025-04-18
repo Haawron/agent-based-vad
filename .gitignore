@@ -11,3 +11,4 @@ __pycache__/
 *.pt
 *.pth
 *.pkl
+!libs/perception_models/core/data

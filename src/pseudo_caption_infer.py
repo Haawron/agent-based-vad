@@ -1,5 +1,6 @@
 import os
 import sys
+from collections import abc
 sys.path.append('/code/src')
 from helper import df_ann_test, sr_num_frames_test, SegmentDataset
 
@@ -37,6 +38,8 @@ def get_mean_and_std(retriever_name):
         'google/siglip2-so400m-patch14-224',
         'google/siglip-so400m-patch14-384',
         'google/siglip2-so400m-patch14-384',
+        'facebook/PE-Core-L14-336',
+        'facebook/PE-Core-G14-448',
     ]:
         mean = (0.5, 0.5, 0.5)
         std = (0.5, 0.5, 0.5)
@@ -99,6 +102,26 @@ def load_retriever_model(
             short_side_size, crop_size = 256, 224
         elif retriever_name.endswith('384'):
             short_side_size, crop_size = 448, 384
+
+    elif retriever_name in [
+        'facebook/PE-Core-L14-336',
+        'facebook/PE-Core-G14-448',
+    ]:
+        sys.path = ['/code/libs/perception_models'] + sys.path
+        from core.vision_encoder.factory import create_model_and_transforms, get_tokenizer
+        if retriever_name == 'facebook/PE-Core-L14-336':
+            model_name = 'PEv1-L14-336'
+            pretrained = '/code/libs/perception_models/PE-Core-L14-336.pt'
+            short_side_size, crop_size = 384, 336
+        elif retriever_name == 'facebook/PE-Core-G14-448':
+            model_name = 'PEv1-G14-448'
+            pretrained = '/code/libs/perception_models/PE-Core-G14-448.pt'
+            short_side_size, crop_size = 512, 448
+        tokenizer = get_tokenizer(model_name)
+        model, _, _ = create_model_and_transforms(
+            model_name,
+            pretrained=pretrained,
+        )
 
     model.eval()
     model.to(device, non_blocking=True)
@@ -190,6 +213,18 @@ class Inner:
             image_embeds = reduce(image_embeds, '(b t) d -> b d', 'mean', t=t)
             image_embeds /= image_embeds.norm(dim=-1, keepdim=True)
 
+        elif self.retriever_name in [
+            'facebook/PE-Core-L14-336',
+            'facebook/PE-Core-G14-448',
+        ]:
+            # The default number of frames = 16 https://github.com/facebookresearch/perception_models/blob/0fc34706b2c78fc2878fd54fd05075304583b8b3/core/transforms/video_transform.py#L79
+            t = frames.shape[2]
+            frames = rearrange(frames, 'b c t h w -> (b t) c h w')
+            image_embeds = self.model.visual.forward(frames)
+            # No normalize before mean https://github.com/facebookresearch/perception_models/blob/0fc34706b2c78fc2878fd54fd05075304583b8b3/apps/pe/clip_benchmark/metrics/zeroshot_classification.py#L139
+            image_embeds = reduce(image_embeds, '(b t) d -> b d', 'mean', t=t)
+            # image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
+
         return image_embeds  # [B, D_out]
 
     @torch.inference_mode()
@@ -225,7 +260,17 @@ class Inner:
                 truncation=True, return_tensors='pt'
             )
 
-        if isinstance(encoding, dict):
+        elif self.retriever_name in [
+            'facebook/PE-Core-L14-336',
+            'facebook/PE-Core-G14-448',
+        ]:
+            encoding = self.tokenizer(
+                texts,
+                max_length=self.tokenizer.context_length, padding='max_length',  # 32, 32, 72
+                truncation=True, return_tensors='pt'
+            )
+
+        if isinstance(encoding, (abc.Mapping, abc.MutableMapping)):
             for k, v in encoding.items():
                 if isinstance(v, torch.Tensor):
                     encoding[k] = v.to(self.device, non_blocking=True)
@@ -257,129 +302,18 @@ class Inner:
             text_embeds = self.model.text_model.forward(**encoding).pooler_output
             text_embeds /= text_embeds.norm(dim=-1, keepdim=True)
 
+        elif self.retriever_name in [
+            'facebook/PE-Core-L14-336',
+            'facebook/PE-Core-G14-448',
+        ]:
+            text_embeds = self.model.encode_text(encoding, normalize=True)  # normalized
+
         return text_embeds
-
-    def extract_tmf(
-        self,
-        num_sampled_frames: int = 32,
-    ):
-        p_videos_rootdir = Path(f"/code/data/UCF_Crimes/Videos")
-        p_outdir_tmf = Path(f'/code/output/tmf/ucf-crime/{num_sampled_frames}')
-        p_outdir_tmf.mkdir(exist_ok=True, parents=True)
-        print('Outdir:', p_outdir_tmf, flush=True)
-
-        for idx, row in tqdm(df_ann_test.iterrows(), total=len(df_ann_test), file=sys.stdout, position=1):
-            raw_rel_video_path = row['raw_rel_video_path']
-            p_out_tmf = (p_outdir_tmf / raw_rel_video_path).with_suffix('.jpg')
-            p_out_tmf.parent.mkdir(exist_ok=True, parents=True)
-            p_video = p_videos_rootdir / raw_rel_video_path
-            vr = decord.VideoReader(str(p_video), ctx=decord.cpu(0))
-            num_frames = len(vr)
-            idxs = np.linspace(0, num_frames - 1, num=num_sampled_frames, dtype=int)
-            frames = vr.get_batch(idxs.tolist()).asnumpy()
-            bg = np.median(frames, axis=0)
-            bg = Image.fromarray(bg.astype(np.uint8))
-            bg.save(p_out_tmf, format='jpeg')
-
-    def extract_tmf_embeddings(
-        self,
-        rank: int = 0, world_size: int = 1,
-        num_tmf_frames: int = 32,
-        retriever_name: str = 'imagebind',
-    ):
-        device = f'cuda:{rank % 8}'
-        p_tmf_dir = Path(f"/code/output/tmf/ucf-crime/{num_tmf_frames}")
-        assert p_tmf_dir.exists(), f"TMF directory {p_tmf_dir} does not exist"
-        p_outdir_tmf_embeddings_with_options = self.p_outdir_embeddings / f"tmf_frames={num_tmf_frames}"
-        p_outdir_tmf_embeddings_with_options.mkdir(exist_ok=True, parents=True)
-        print('Outdir:', p_outdir_tmf_embeddings_with_options, flush=True)
-
-        self.model, _, short_side_size, crop_size = load_retriever_model(self.retriever_name, device)
-        mean, std = get_mean_and_std(self.retriever_name)
-        transform = SegmentDataset(
-            short_side_size=short_side_size, crop_size=crop_size,
-            mean=mean, std=std,
-        ).video_transform
-
-        df_ann_test_rank = df_ann_test.iloc[rank::world_size].reset_index(drop=True)
-        for idx, row in tqdm(df_ann_test_rank.iterrows(), total=len(df_ann_test_rank), file=sys.stdout, position=1):
-            raw_rel_video_path = row['raw_rel_video_path']
-            rel_video_path = row['rel_video_path']
-            p_out_embedding = (p_outdir_tmf_embeddings_with_options / rel_video_path).with_suffix('.pt')
-            p_out_embedding.parent.mkdir(exist_ok=True, parents=True)
-            p_tmf = (p_tmf_dir / raw_rel_video_path).with_suffix('.jpg')
-            if not p_tmf.exists():
-                print(f"TMF image {p_tmf} does not exist")
-                continue
-            bg = torch.tensor(np.array(Image.open(p_tmf).convert('RGB'))).float()  # [H, W, C]
-            bg = bg[None][[0] * 8]  # [8, H, W, C]
-            bg = bg.permute(3, 0, 1, 2)  # [C, 8, H, W]
-            bg = transform(bg)
-            bg = bg.to(device)
-            emb_bg = self.forward_video(bg)[0]  # [D_out]
-            emb_bg = emb_bg.cpu()
-            torch.save(emb_bg, p_out_embedding)
-            tqdm.write(f"Rank {rank} finished saving TMF embedding to {p_out_embedding}")
-
-    def extract_embeddings_per_segment(
-        self,
-        rank: int = 0, world_size: int = 1,
-        segment_duration_sec: float = 1.,
-        segment_overlap_sec: float = .5,
-        num_sampled_segment_frames: int = 16,
-    ):
-        device = f'cuda:{rank % 8}'
-        p_outdir_segment_embeddings_with_options = self.p_outdir_embeddings / f"dur={segment_duration_sec:.1f}_ol={segment_overlap_sec:.1f}_fs={num_sampled_segment_frames}" / 'segments'
-        p_outdir_segment_embeddings_with_options.mkdir(exist_ok=True, parents=True)
-        print('Outdir:', p_outdir_segment_embeddings_with_options, flush=True)
-
-        self.model, _, short_side_size, crop_size = load_retriever_model(self.retriever_name, device)
-        mean, std = get_mean_and_std(self.retriever_name)
-
-        ds = SegmentDataset(
-            p_videos_dir=self.p_videos_root,
-            segment_duration_sec=segment_duration_sec,
-            segment_overlap_sec=segment_overlap_sec,
-            num_sampled_segment_frames=num_sampled_segment_frames,
-            split='test',
-            short_side_size=short_side_size, crop_size=crop_size,
-            mean=mean, std=std,
-            rank=rank, world_size=world_size,
-        )
-        dl = torch.utils.data.DataLoader(
-            ds,
-            batch_size=1,
-            num_workers=8,
-            collate_fn=lambda x: x,
-            shuffle=False,
-            drop_last=False,
-            pin_memory=True,
-            prefetch_factor=16
-        )
-        num_total_segments = len(ds)
-        print(f"Rank {rank} of {world_size} will process {num_total_segments} segments", flush=True)
-
-        for segment_data in tqdm(
-            dl, total=len(ds), maxinterval=.5, file=sys.stdout, position=1
-        ):
-            segment_info = segment_data[0]['segment_info']
-            p_video = segment_info['p_video']
-            p_out_embedding = (
-                p_outdir_segment_embeddings_with_options
-                / ('Normal' if 'Normal' in p_video.parent.name else p_video.parent.name)
-                / p_video.stem
-                / f'{segment_info["segment_idx"]:04d}.npy'
-            )
-            p_out_embedding.parent.mkdir(exist_ok=True, parents=True)
-            frames = segment_data[0]['frames'].to(device, non_blocking=True)
-
-            emb_segment = self.forward_video(frames[None])[0]
-            emb_segment = emb_segment.cpu().numpy()
-            np.save(p_out_embedding, emb_segment)
 
     def extract_caption_embeddings(
         self,
         rank: int = 0, world_size: int = 1,
+        prompt_type: str = 'default',
     ):
         def get_p_rank(p, r):
             return p.with_name(p.stem + f'_{r}.{p.suffix}')
@@ -438,10 +372,9 @@ class Inner:
 
         # prompting
         # 69.54
-        # def prompt_normal(text):
-        #     return text
-        # def prompt_anomalous(text, category):
-        #     return text
+        if prompt_type == 'default':
+            prompt_normal = lambda text: text
+            prompt_anomalous = lambda text, category: text
 
         # 79.67
         # def prompt_normal(text):
@@ -462,39 +395,54 @@ class Inner:
         #     return f'[Anomalous]: {text}'
 
         # 81.78, 82.13 (맨 처음 프롬프트 SVD 한 거 빼면 이거 나옴)
-        # def prompt_normal(text):
-        #     return f'[normal] {text}'
-        # def prompt_anomalous(text, category):
-        #     return f'[Anomalous]: {text}'
+        elif prompt_type == 'bracket_no_colon_lower_normal':
+            prompt_normal = lambda text: f'[normal] {text}'
+            prompt_anomalous = lambda text, category: f'[Anomalous]: {text}'
 
-        #
-        def prompt_normal(text):
-            return json.dumps({
-                'Description': text,
+        # 56.49
+        elif prompt_type == 'json':
+            prompt_normal = lambda text: json.dumps({
                 'Anomality': 'Normal',
-            })
-        def prompt_anomalous(text, category):
-            return json.dumps({
                 'Description': text,
+            })
+            prompt_anomalous = lambda text, category: json.dumps({
                 'Anomality': 'Anomalous',
+                'Description': text,
+            })
+
+        # 60.65 -> 75.73
+        elif prompt_type == 'json_cat':
+            prompt_normal = lambda text: json.dumps({
+                'Anomality': 'Normal',
+                'Description': text,
+            })
+            prompt_anomalous = lambda text, category: json.dumps({
+                'Anomality': 'Anomalous',
+                'Anomaly type': category,
+                'Description': text,
             })
 
         texts_normal_subset = [prompt_normal(text) for text in texts_normal_subset]
         texts_anomalous_subset = [prompt_anomalous(text, category) for text, category in zip(texts_anomalous_subset, categories_anomalous_subset)]
 
         # create output directories
-        self.p_outdir_embeddings.mkdir(exist_ok=True, parents=True)
-        self.p_norm.unlink(missing_ok=True)
-        self.p_anom.unlink(missing_ok=True)
-        p_normal_rank = get_p_rank(self.p_norm, rank)
-        p_anomalous_rank = get_p_rank(self.p_anom, rank)
+        p_norm = self.p_outdir_embeddings / prompt_type / "embs_normal.pt"
+        p_anom = self.p_outdir_embeddings / prompt_type / "embs_anomalous.pt"
+        p_norm.parent.mkdir(exist_ok=True, parents=True)
+        p_norm.unlink(missing_ok=True)
+        p_anom.unlink(missing_ok=True)
+        # self.p_outdir_embeddings.mkdir(exist_ok=True, parents=True)
+        # self.p_norm.unlink(missing_ok=True)
+        # self.p_anom.unlink(missing_ok=True)
+        p_normal_rank = get_p_rank(p_norm, rank)
+        p_anomalous_rank = get_p_rank(p_anom, rank)
         p_normal_rank.unlink(missing_ok=True)
         p_anomalous_rank.unlink(missing_ok=True)
 
         for idx, (texts, p_rank, p) in enumerate(zip(
             [texts_normal_subset, texts_anomalous_subset],
             [p_normal_rank, p_anomalous_rank],
-            [self.p_norm, self.p_anom],
+            [p_norm, p_anom],
         )):
             output_rank = {
                 'texts': texts,
@@ -515,6 +463,126 @@ class Inner:
             p_rank.unlink(missing_ok=True)
             tqdm.write(f"Rank {rank} finished saving captions to {p}")
 
+    def extract_tmf(
+        self,
+        num_sampled_frames: int = 32,
+    ):
+        p_videos_rootdir = Path(f"/code/data/UCF_Crimes/Videos")
+        p_outdir_tmf = Path(f'/code/output/tmf/ucf-crime/{num_sampled_frames}')
+        p_outdir_tmf.mkdir(exist_ok=True, parents=True)
+        print('Outdir:', p_outdir_tmf, flush=True)
+
+        for idx, row in tqdm(df_ann_test.iterrows(), total=len(df_ann_test), file=sys.stdout, position=1):
+            raw_rel_video_path = row['raw_rel_video_path']
+            p_out_tmf = (p_outdir_tmf / raw_rel_video_path).with_suffix('.jpg')
+            p_out_tmf.parent.mkdir(exist_ok=True, parents=True)
+            p_video = p_videos_rootdir / raw_rel_video_path
+            vr = decord.VideoReader(str(p_video), ctx=decord.cpu(0))
+            num_frames = len(vr)
+            idxs = np.linspace(0, num_frames - 1, num=num_sampled_frames, dtype=int)
+            frames = vr.get_batch(idxs.tolist()).asnumpy()
+            bg = np.median(frames, axis=0)
+            bg = Image.fromarray(bg.astype(np.uint8))
+            bg.save(p_out_tmf, format='jpeg')
+
+    def extract_tmf_embeddings(
+        self,
+        rank: int = 0, world_size: int = 1,
+        num_tmf_frames: int = 32,
+    ):
+        device = f'cuda:{rank % 8}'
+        p_tmf_dir = Path(f"/code/output/tmf/ucf-crime/{num_tmf_frames}")
+        assert p_tmf_dir.exists(), f"TMF directory {p_tmf_dir} does not exist"
+        p_outdir_tmf_embeddings_with_options = self.p_outdir_embeddings / f"tmf_frames={num_tmf_frames}"
+        p_outdir_tmf_embeddings_with_options.mkdir(exist_ok=True, parents=True)
+        print('Outdir:', p_outdir_tmf_embeddings_with_options, flush=True)
+
+        self.model, _, short_side_size, crop_size = load_retriever_model(self.retriever_name, device)
+        mean, std = get_mean_and_std(self.retriever_name)
+        transform = SegmentDataset(
+            short_side_size=short_side_size, crop_size=crop_size,
+            mean=mean, std=std,
+        ).video_transform
+
+        df_ann_test_rank = df_ann_test.iloc[rank::world_size].reset_index(drop=True)
+        for idx, row in tqdm(df_ann_test_rank.iterrows(), total=len(df_ann_test_rank), file=sys.stdout, position=1):
+            raw_rel_video_path = row['raw_rel_video_path']
+            rel_video_path = row['rel_video_path']
+            p_out_embedding = (p_outdir_tmf_embeddings_with_options / rel_video_path).with_suffix('.pt')
+            p_out_embedding.parent.mkdir(exist_ok=True, parents=True)
+            p_tmf = (p_tmf_dir / raw_rel_video_path).with_suffix('.jpg')
+            if not p_tmf.exists():
+                print(f"TMF image {p_tmf} does not exist")
+                continue
+            bg = torch.tensor(np.array(Image.open(p_tmf).convert('RGB'))).float()  # [H, W, C]
+            bg = bg[None][[0] * 8]  # [8, H, W, C]
+            bg = bg.permute(3, 0, 1, 2)  # [C, 8, H, W]
+            bg = transform(bg)
+            bg = bg.to(device)
+            emb_bg = self.forward_video(bg)[0]  # [D_out]
+            emb_bg = emb_bg.cpu()
+            torch.save(emb_bg, p_out_embedding)
+            tqdm.write(f"Rank {rank} finished saving TMF embedding to {p_out_embedding}")
+
+    def extract_embeddings_per_segment(
+        self,
+        rank: int = 0, world_size: int = 1,
+        segment_duration_sec: float = 1.,
+        segment_overlap_sec: float = .5,
+        num_sampled_segment_frames: int = 16,
+    ):
+        device = f'cuda:{rank % 8}'
+        p_outdir_segment_embeddings_with_options = (
+            self.p_outdir_embeddings
+            / f"dur={segment_duration_sec:.1f}_ol={segment_overlap_sec:.1f}_fs={num_sampled_segment_frames}"
+            / 'segments')
+        p_outdir_segment_embeddings_with_options.mkdir(exist_ok=True, parents=True)
+        print('Outdir:', p_outdir_segment_embeddings_with_options, flush=True)
+
+        self.model, _, short_side_size, crop_size = load_retriever_model(self.retriever_name, device)
+        mean, std = get_mean_and_std(self.retriever_name)
+
+        ds = SegmentDataset(
+            p_videos_dir=self.p_videos_root,
+            segment_duration_sec=segment_duration_sec,
+            segment_overlap_sec=segment_overlap_sec,
+            num_sampled_segment_frames=num_sampled_segment_frames,
+            split='test',
+            short_side_size=short_side_size, crop_size=crop_size,
+            mean=mean, std=std,
+            rank=rank, world_size=world_size,
+        )
+        dl = torch.utils.data.DataLoader(
+            ds,
+            batch_size=1,
+            num_workers=8,
+            collate_fn=lambda x: x,
+            shuffle=False,
+            drop_last=False,
+            pin_memory=True,
+            prefetch_factor=16
+        )
+        num_total_segments = len(ds)
+        print(f"Rank {rank} of {world_size} will process {num_total_segments} segments", flush=True)
+
+        for segment_data in tqdm(
+            dl, total=len(ds), maxinterval=.5, file=sys.stdout, position=1
+        ):
+            segment_info = segment_data[0]['segment_info']
+            p_video = segment_info['p_video']
+            p_out_embedding = (
+                p_outdir_segment_embeddings_with_options
+                / ('Normal' if 'Normal' in p_video.parent.name else p_video.parent.name)
+                / p_video.stem
+                / f'{segment_info["segment_idx"]:04d}.npy'
+            )
+            p_out_embedding.parent.mkdir(exist_ok=True, parents=True)
+            frames = segment_data[0]['frames'].to(device, non_blocking=True)
+
+            emb_segment = self.forward_video(frames[None])[0]
+            emb_segment = emb_segment.cpu().numpy()
+            np.save(p_out_embedding, emb_segment)
+
     @torch.inference_mode()
     def match_captions_per_segment(
         self,
@@ -524,16 +592,26 @@ class Inner:
         num_sampled_segment_frames: int = 16,
         num_captions_per_segment: int = 10,
         anomalous_scale: float = 1.,
+        prompt_type: str = 'default',
     ):
-        assert self.p_outdir_embeddings.exists(), f"Embeddings directory {self.p_outdir_embeddings} does not exist"
+        # assert self.p_outdir_embeddings.exists(), f"Embeddings directory {self.p_outdir_embeddings} does not exist"
+        p_norm = self.p_outdir_embeddings / prompt_type / "embs_normal.pt"
+        p_anom = self.p_outdir_embeddings / prompt_type / "embs_anomalous.pt"
+        assert p_norm.exists(), f"Normal embeddings {p_norm} does not exist"
+        assert p_anom.exists(), f"Anomalous embeddings {p_anom} does not exist"
+        p_segment_embeddings_with_options = (
+            self.p_outdir_embeddings
+            / f"dur={segment_duration_sec:.1f}_ol={segment_overlap_sec:.1f}_fs={num_sampled_segment_frames}"
+            / 'segments')
+        p_segment_embeddings_with_options.mkdir(exist_ok=True, parents=True)
         self.p_outdir_scored.mkdir(exist_ok=True, parents=True)
 
         num_segment_frames = int(segment_duration_sec * 30)
         num_overlap_frames = int(segment_overlap_sec * 30)
         # texts_norm, texts_anom, categories_anomalous = load_captions(self.p_captions_dir)
 
-        emb_dict_norm = torch.load(self.p_norm, weights_only=True)
-        emb_dict_anom = torch.load(self.p_anom, weights_only=True)
+        emb_dict_norm = torch.load(p_norm, weights_only=True)
+        emb_dict_anom = torch.load(p_anom, weights_only=True)
         embs_norm = emb_dict_norm['embeddings'].numpy()  # [NUM_NORMAL, D_OUT]
         embs_anom = emb_dict_anom['embeddings'].numpy() * anomalous_scale  # [NUM_ANOMALOUS, D_OUT]
         embs_anom_cat = emb_dict_anom['category_embeddings'].numpy()  # [NUM_ANOMALOUS, D_OUT]
@@ -555,13 +633,13 @@ class Inner:
 
         emb_anomalous_mean = embs_anom.mean(axis=0)
         emb_anomalous_mean_unit = emb_anomalous_mean / np.linalg.norm(emb_anomalous_mean)
-        p_svd_anom = self.p_anom.with_name(self.p_anom.stem + f'_svd.{self.p_anom.suffix}')
-        if p_svd_anom.exists():
-            embs_anom_sing = torch.load(p_svd_anom, weights_only=True).numpy()
-        else:
-            _, _, embs_anom_sing = np.linalg.svd(embs_anom, full_matrices=False)
-            if rank == 0:
-                torch.save(torch.from_numpy(embs_anom_sing), p_svd_anom)
+        # p_svd_anom = p_anom.with_name(p_anom.stem + f'_svd.{p_anom.suffix}')
+        # if p_svd_anom.exists():
+        #     embs_anom_sing = torch.load(p_svd_anom, weights_only=True).numpy()
+        # else:
+        #     _, _, embs_anom_sing = np.linalg.svd(embs_anom, full_matrices=False)
+        #     if rank == 0:
+        #         torch.save(torch.from_numpy(embs_anom_sing), p_svd_anom)
         # _, _, embs_anomalous_pc = np.linalg.svd(embs_anomalous - emb_anomalous_mean, full_matrices=False)
 
         emb_text_mean = (num_norms * emb_normal_mean + num_anoms * emb_anomalous_mean) / (num_norms + num_anoms)
@@ -574,9 +652,6 @@ class Inner:
         emb_proj_delta_units = emb_delta_units / np.linalg.norm(emb_delta_units)
 
         ##################################################################
-
-        p_segment_embeddings_with_options = self.p_outdir_embeddings / f"dur={segment_duration_sec:.1f}_ol={segment_overlap_sec:.1f}_fs={num_sampled_segment_frames}" / 'segments'
-        p_segment_embeddings_with_options.mkdir(exist_ok=True, parents=True)
 
         def distribute_workload(df, rank, world_size):
             df = df.copy()
@@ -592,12 +667,15 @@ class Inner:
 
         df_ann_test_rank = distribute_workload(
             df_ann_test.join(sr_num_frames_test, on='raw_rel_video_path'), rank, world_size)
-        for idx, row in tqdm(
+        dt_cur_sum, num_cur_segments = 0, 0  # for avg time per segment
+        pbar = tqdm(
             df_ann_test_rank.iterrows(),
             total=len(df_ann_test_rank),
             file=sys.stdout,
             position=1
-        ):
+        )
+        for idx, row in pbar:
+            t0 = time.time()
             p_out_score = (self.p_outdir_scored / row['rel_video_path']).with_suffix('.json')
             p_out_score.parent.mkdir(exist_ok=True, parents=True)
             p_segment_dir = p_segment_embeddings_with_options / row['rel_video_path'].split('.')[0]
@@ -629,7 +707,7 @@ class Inner:
 
             ################
             # using segment mean
-            emb_segment_mean = embs_segment.mean(axis=0)
+            # emb_segment_mean = embs_segment.mean(axis=0)
 
             # windowed mean
             # window = 120
@@ -810,9 +888,15 @@ class Inner:
 
             dot_products = np.dot(embs_segment, embs.T)
             indices = np.argsort(-dot_products, axis=-1)[:, :num_captions_per_segment]
+            dt = time.time() - t0
             dot_products = np.take_along_axis(dot_products, indices, axis=-1)
             selected_texts = np.take(texts, indices)
             is_anomalous = indices > len(texts_norm)
+
+            # print time taken for each segment
+            dt_cur_sum += dt
+            num_cur_segments += embs_segment.shape[0]
+            pbar.set_postfix_str(f"Avg time per segment: {dt_cur_sum / num_cur_segments:.5f}s")
 
             segment_records = []
             for idx, p_segment in enumerate(p_segments):
@@ -901,6 +985,11 @@ class Inner:
                         dots *= 66.74119567871094
                     elif retriever_name in ['internvideo-1b', 'internvideo-6b']:
                         dots *= 100
+                    elif retriever_name in [
+                        'facebook/PE-Core-L14-336',
+                        'facebook/PE-Core-G14-448',
+                    ]:
+                        dots *= 100
                     weights = np.exp(dots - np.max(dots))
                     weights /= np.sum(weights)
                     segment_score = weights @ segment_record['is_anomalous']  # anomality of all captions
@@ -946,6 +1035,19 @@ class Main:
     def __init__(self):
         pass
 
+    def extract_caption_embeddings(
+        self,
+        rank: int = 0, world_size: int = 1,
+        caption_type: str = '00-rich-context',
+        retriever_name: str = 'imagebind',
+        prompt_type: str = 'default',
+    ):
+        inner = Inner(caption_type, retriever_name, rank, world_size)
+        inner.extract_caption_embeddings(
+            rank=rank, world_size=world_size,
+            prompt_type=prompt_type,
+        )
+
     def extract_tmf(
         self,
         num_sampled_frames: int = 32,
@@ -984,17 +1086,6 @@ class Main:
             num_tmf_frames=num_tmf_frames,
         )
 
-    def extract_caption_embeddings(
-        self,
-        rank: int = 0, world_size: int = 1,
-        caption_type: str = '00-rich-context',
-        retriever_name: str = 'imagebind',
-    ):
-        inner = Inner(caption_type, retriever_name, rank, world_size)
-        inner.extract_caption_embeddings(
-            rank=rank, world_size=world_size,
-        )
-
     def match_captions_per_segment(
         self,
         rank: int = 0, world_size: int = 1,
@@ -1005,6 +1096,7 @@ class Main:
         anomalous_scale: float = 1.,
         caption_type: str = '00-rich-context',
         retriever_name: str = 'imagebind',
+        prompt_type: str = 'default',
     ):
         inner = Inner(caption_type, retriever_name, rank, world_size)
         inner.match_captions_per_segment(
@@ -1014,6 +1106,7 @@ class Main:
             num_sampled_segment_frames=num_sampled_segment_frames,
             num_captions_per_segment=num_captions_per_segment,
             anomalous_scale=anomalous_scale,
+            prompt_type=prompt_type,
         )
 
     def evaluate(

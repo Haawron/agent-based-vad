@@ -11,9 +11,10 @@ retriever_name='imagebind'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=16
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ###################################
 
@@ -26,9 +27,10 @@ retriever_name='languagebind'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=16
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ###################################
 
@@ -41,9 +43,10 @@ retriever_name='imagebind'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=16
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ######################################################################
 
@@ -56,9 +59,10 @@ retriever_name='languagebind'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=8
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ######################################################################
 
@@ -71,9 +75,10 @@ retriever_name='internvideo-1b'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=4
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ###################################
 
@@ -86,9 +91,10 @@ retriever_name='internvideo-1b'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=8
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ###################################
 
@@ -101,9 +107,10 @@ retriever_name='internvideo-1b'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=16
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ###################################
 
@@ -116,9 +123,10 @@ retriever_name='internvideo-6b'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=4
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ######################################################################
 
@@ -131,9 +139,10 @@ retriever_name='google/siglip-so400m-patch14-224'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=8
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ###################################
 
@@ -146,9 +155,10 @@ retriever_name='google/siglip-so400m-patch14-384'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=8
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ###################################
 
@@ -161,9 +171,10 @@ retriever_name='google/siglip-so400m-patch14-384'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=16
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ###################################
 
@@ -176,9 +187,10 @@ retriever_name='google/siglip2-so400m-patch14-384'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=8
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
 
 ###################################
 
@@ -191,9 +203,42 @@ retriever_name='google/siglip2-so400m-patch14-384'
 segment_duration_sec=1.0
 segment_overlap_sec=0.5
 num_sampled_segment_frames=16
-# faiss options
+# eval options
 num_captions_per_segment=10
 anomalous_scale=1.0
+prompt_type='default'
+
+######################################################################
+
+# Perception model
+# docker options
+image_name='pe'
+# video feature options
+caption_type='00-rich-context'
+retriever_name='facebook/PE-Core-L14-336'
+segment_duration_sec=1.0
+segment_overlap_sec=0.5
+num_sampled_segment_frames=16
+# eval options
+num_captions_per_segment=10
+anomalous_scale=1.0
+prompt_type='default'
+
+###################################
+
+# Perception model G
+# docker options
+image_name='pe'
+# video feature options
+caption_type='00-rich-context'
+retriever_name='facebook/PE-Core-G14-448'
+segment_duration_sec=1.0
+segment_overlap_sec=0.5
+num_sampled_segment_frames=16
+# eval options
+num_captions_per_segment=10
+anomalous_scale=1.0
+prompt_type='default'
 
 ####################################################################################
 
@@ -205,6 +250,7 @@ for rank in $(seq 0 $(( world_size - 1 ))); do
         --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
         --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
         --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+        --mount type=bind,src=/datalake/share/datasets/xd/XD-Violence,dst=/datasets/XD-Violence/ \
         --name "extract${rank:-0}" \
         "$image_name" \
             python src/pseudo_caption_infer.py extract_embeddings_per_segment \
@@ -224,12 +270,14 @@ for rank in $(seq 0 $(( world_size - 1 ))); do
         --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
         --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
         --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+        --mount type=bind,src=/datalake/share/datasets/xd/XD-Violence,dst=/datasets/XD-Violence/ \
         --name "extcap${rank:-0}" \
         "$image_name" \
             python src/pseudo_caption_infer.py extract_caption_embeddings \
                 --rank ${rank:-0} --world_size ${world_size:-1} \
                 --caption_type $caption_type \
-                --retriever_name $retriever_name &
+                --retriever_name $retriever_name \
+                --prompt_type $prompt_type &
 done && wait && docker logs -f extcap0
 
 # scoring 하기
@@ -241,12 +289,14 @@ for rank in $(seq 0 $(( world_size - 1 ))); do
         --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
         --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
         --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+        --mount type=bind,src=/datalake/share/datasets/xd/XD-Violence,dst=/datasets/XD-Violence/ \
         --name "match$rank" \
         "$image_name" \
             python src/pseudo_caption_infer.py match_captions_per_segment \
                 --rank ${rank:-0} --world_size ${world_size:-1} \
                 --caption_type $caption_type \
                 --retriever_name $retriever_name \
+                --prompt_type $prompt_type \
                 --segment_duration_sec $segment_duration_sec \
                 --segment_overlap_sec $segment_overlap_sec \
                 --num_sampled_segment_frames $num_sampled_segment_frames \
@@ -262,6 +312,7 @@ docker run \
     --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
     --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
     --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+    --mount type=bind,src=/datalake/share/datasets/xd/XD-Violence,dst=/datasets/XD-Violence/ \
     --name "exttmf" \
         "$image_name" \
         python src/pseudo_caption_infer.py extract_tmf \
@@ -274,6 +325,7 @@ docker run \
     --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code \
     --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache \
     --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ \
+    --mount type=bind,src=/datalake/share/datasets/xd/XD-Violence,dst=/datasets/XD-Violence/ \
     --name "exttmfe" \
         "$image_name" \
         python src/pseudo_caption_infer.py extract_tmf_embeddings \
