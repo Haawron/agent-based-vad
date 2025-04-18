@@ -1,7 +1,7 @@
 # DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile -t torch --build-arg UID=$(id -u) --build-arg GID=$(id -g) .
 
 # Usage:
-    # docker run -dit --shm-size=32G --gpus all --pid host --network host --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ --name vscode torch zsh
+    # docker run -dit --shm-size=32G --gpus all --pid host --network host --mount type=bind,src=/projects3/home/hglee/prjs/agent-based-vad/,dst=/code --mount type=bind,src=$HOME/.cache,dst=/home/hglee/.cache --mount type=bind,src=/projects3/datasets/UCF_Crimes/,dst=/datasets/UCF_Crimes/ --mount type=bind,src=/datalake/share/datasets/xd/XD-Violence,dst=/datasets/XD-Violence/ --name vscode torch zsh
 
 FROM ubuntu:22.04 AS base
 

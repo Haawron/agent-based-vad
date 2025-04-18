@@ -264,16 +264,14 @@ class Inner:
             'facebook/PE-Core-L14-336',
             'facebook/PE-Core-G14-448',
         ]:
-            encoding = self.tokenizer(
-                texts,
-                max_length=self.tokenizer.context_length, padding='max_length',  # 32, 32, 72
-                truncation=True, return_tensors='pt'
-            )
+            encoding = self.tokenizer(texts)
 
         if isinstance(encoding, (abc.Mapping, abc.MutableMapping)):
             for k, v in encoding.items():
                 if isinstance(v, torch.Tensor):
                     encoding[k] = v.to(self.device, non_blocking=True)
+        elif isinstance(encoding, torch.Tensor):
+            encoding = encoding.to(self.device, non_blocking=True)
 
         return encoding
 

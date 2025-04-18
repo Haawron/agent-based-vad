@@ -3,6 +3,7 @@ load_dotenv()
 
 import sys
 import json
+import time
 import textwrap
 from pathlib import Path
 
@@ -107,6 +108,7 @@ class Main:
                     tqdm.write(f"Timeout: {e}")
                     tqdm.write(f'Try {current_try + 1}/{max_tries}')
                     tqdm.write('Retrying...')
+                    time.sleep(30)
                     continue
                 else:
                     break
